@@ -97,42 +97,67 @@ function route() {
 function renderContents() {
   document.title = state.book.title || DEFAULT_BOOK_TITLE;
   const title = esc(state.book.title || DEFAULT_BOOK_TITLE);
+  const head = `
+    <div class="app-head">
+      <div class="app-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#5d4a2e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 5.5c2.5-1 5.5-1 9 1v13c-3.5-2-6.5-2-9-1z"/><path d="M21 5.5c-2.5-1-5.5-1-9 1v13c3.5-2 6.5-2 9-1z"/>
+          <path d="M14.5 14.5l2-2.5 1.5 1 1.5-2.5" stroke="#647024"/>
+        </svg>
+      </div>
+      <div class="app-title">
+        <h1>${title}</h1>
+        <div class="sub">Worksheets for Mrs. Miranda\u2019s math classes</div>
+      </div>
+    </div>`;
 
   if (!state.groups.length) {
-    root.innerHTML = `<div class="wrap"><h1>${title}</h1>
+    root.innerHTML = `<div class="wrap">${head}
       <div class="notice"><h2>No worksheets yet</h2>
-      <p class="muted">Your teacher hasn't added any worksheets. Check back after class.</p></div></div>`;
+      <p class="muted">Your teacher hasn\u2019t added any worksheets. Check back after class.</p></div></div>`;
     return;
   }
 
   const group = state.groups.find((g) => g.unit === state.unit) || state.groups[0];
-  const tabs = state.groups.length > 1 ? `
-    <div class="tabs" role="tablist" aria-label="Units">
+  const seg = state.groups.length > 1 ? `
+    <div class="seg" role="tablist" aria-label="Units">
       ${state.groups.map((g) => `<button class="tab" role="tab" data-unit="${esc(g.unit)}"
-        aria-selected="${g.unit === group.unit}">${esc(g.unitTitle)}</button>`).join("")}
+        aria-selected="${g.unit === group.unit}" title="${esc(g.unitTitle)}">Unit ${esc(g.unit)}</button>`).join("")}
     </div>` : "";
 
-  const openCount = group.lessons.filter((l) => L.lessonOpen(state.book, l)).length;
+  const openLessons = group.lessons.filter((l) => L.lessonOpen(state.book, l));
+  const openCount = openLessons.length;
+  const openSheets = group.lessons.reduce((n, l) => n + l.sheetList.filter((s) => L.isReleased(state.book, s.id)).length, 0);
 
-  const rows = group.lessons.map((l) => {
+  const cards = group.lessons.map((l, i) => {
     const open = L.lessonOpen(state.book, l);
-    const buttons = l.sheetList
-      .filter((s) => L.isReleased(state.book, s.id))
-      .map((s) => `<a class="btn open" href="#${esc(s.id)}">${esc(s.label)}</a>`).join("");
-    return `<li class="lesson ${open ? "is-open" : ""}" id="row-${esc(l.id)}">
-      <span class="num" aria-hidden="true">${l.num}</span>
-      <span class="title">${esc(l.title)}<span class="sr-only">${open ? "" : " (not assigned yet)"}</span></span>
-      <span class="actions">${open ? buttons : `<span class="soon">Not assigned yet</span>`}</span>
+    const released = l.sheetList.filter((s) => L.isReleased(state.book, s.id));
+    const versions = l.sheetList.length;
+    const buttons = released.map((s) => `<a class="btn open" href="#${esc(s.id)}">${esc(s.label)}</a>`).join("");
+    return `<li class="lesson ${open ? `is-open s${(i % 5) + 1}` : ""}" id="row-${esc(l.id)}">
+      <div class="strip"><span>Lesson ${l.num}</span><span>${versions} version${versions === 1 ? "" : "s"}</span></div>
+      <div class="body">
+        <div class="title">${esc(l.title)}</div>
+        <div class="foot">
+          ${open
+            ? `<span class="actions">${buttons}</span><span class="pill open"><span class="dot"></span>Open</span>`
+            : `<span class="pill">Not assigned yet</span>`}
+        </div>
+      </div>
     </li>`;
   }).join("");
 
   root.innerHTML = `<div class="wrap">
-    <h1>${title}</h1>
-    ${tabs}
-    <h2 style="margin-top:18px">${esc(group.unitTitle)}</h2>
-    <p class="muted small" style="margin:4px 0 0">${openCount} of ${group.lessons.length} lessons open</p>
-    <div class="graph-wrap">${graphSvg(group, openCount)}</div>
-    <ol class="lessons">${rows}</ol>
+    ${head}
+    ${seg}
+    <div class="stats">
+      <div class="stat"><div class="n">${openCount}</div><div class="l">Lessons open</div></div>
+      <div class="stat"><div class="n">${openSheets}</div><div class="l">Worksheets open</div></div>
+      <div class="stat"><div class="n">${group.lessons.length}</div><div class="l">Lessons in this unit</div></div>
+    </div>
+    <div class="section"><h2>${esc(group.unitTitle)}</h2><span class="tag">${openCount} of ${group.lessons.length} lessons open</span></div>
+    <div class="graph-card">${graphSvg(group, openCount)}</div>
+    <ol class="lessons">${cards}</ol>
   </div>`;
 
   root.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => {
@@ -143,7 +168,7 @@ function renderContents() {
 // The unit drawn as a line: each lesson is a point; the line is inked in
 // up to the furthest lesson that's open.
 function graphSvg(group, openCount) {
-  const W = 640, H = 190, padL = 34, padR = 22, padT = 26, padB = 30;
+  const W = 720, H = 150, padL = 30, padR = 18, padT = 24, padB = 22;
   const n = group.lessons.length;
   const x0 = padL + 16, x1 = W - padR - 10, y0 = H - padB - 16, y1 = padT + 6;
   const pts = group.lessons.map((l, i) => {
@@ -194,7 +219,7 @@ async function renderViewer(sid, { lesson, sheet }) {
   document.title = `${lesson.title} (${sheet.label})`;
   root.innerHTML = `
     <div class="bar no-print"><div class="bar-inner">
-      <a class="btn ghost" href="#">← Contents</a>
+      <a class="btn ghost" href="#">← All lessons</a>
       <div class="where">
         <div class="t">Lesson ${lesson.num}: ${esc(lesson.title)}</div>
         <div class="muted small">${esc(sheet.label)}</div>
@@ -241,6 +266,5 @@ async function renderViewer(sid, { lesson, sheet }) {
   }
 }
 </script>
-<style>.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}</style>
 </body>
 </html>
