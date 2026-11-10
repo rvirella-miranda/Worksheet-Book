@@ -1,0 +1,36 @@
+rules_version = '2';
+
+// Security rules for the worksheet book.
+// 1. Replace the email below with the Google account you'll sign in with.
+// 2. Paste this whole file into Firebase console > Firestore Database > Rules > Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isTeacher() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in ['YOUR.EMAIL@school.org'];
+    }
+
+    // The book's table of contents and release switches.
+    // Anyone can read it (students need it to draw the contents page).
+    match /books/{bookId} {
+      allow read: if true;
+      allow write: if isTeacher();
+
+      // Worksheet page images. A student can read a sheet's pages ONLY after
+      // its switch is turned on in the teacher panel.
+      match /sheets/{sheetId}/pages/{pageId} {
+        allow read: if isTeacher()
+          || get(/databases/$(database)/documents/books/$(bookId))
+               .data.get('released', {}).get(sheetId, false) == true;
+        allow write: if isTeacher();
+      }
+    }
+
+    // Everything else is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

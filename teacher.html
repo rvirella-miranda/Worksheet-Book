@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teacher panel</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗝️</text></svg>">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <div class="row" style="margin-bottom:6px">
+    <h1>Teacher panel</h1>
+    <span class="spacer"></span>
+    <span id="who" class="muted small"></span>
+    <button class="btn" id="signBtn" type="button" hidden>Sign out</button>
+  </div>
+  <p class="muted" style="margin:0" id="bookLine"></p>
+  <div id="main"><p class="muted">Loading…</p></div>
+</div>
+<div id="toast" class="toast" hidden role="status"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot,
+  collection, getDocs, FieldPath, deleteField
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  getAuth, onAuthStateChanged, signInWithPopup, signOut, GoogleAuthProvider
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { firebaseConfig, DEFAULT_BOOK_ID, DEFAULT_BOOK_TITLE, TEACHER_EMAILS } from "./config.js";
+import * as L from "./lib.js";
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+const params = new URLSearchParams(location.search);
+const BOOK_ID = (params.get("book") || DEFAULT_BOOK_ID).replace(/[^A-Za-z0-9_-]/g, "");
+const bookRef = doc(db, "books", BOOK_ID);
+const main = document.getElementById("main");
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+));
+
+let book = null;
+let unsub = null;
+let pending = null;      // upload plan waiting for confirmation
+let uploading = false;
+
+document.getElementById("bookLine").textContent = `Book id: ${BOOK_ID}`;
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => (t.hidden = true), 3200);
+}
+
+function studentLink(sheetId) {
+  const u = new URL("index.html", location.href);
+  if (BOOK_ID !== DEFAULT_BOOK_ID) u.searchParams.set("book", BOOK_ID);
+  u.hash = sheetId || "";
+  return u.toString();
+}
+
+// ---------- Sign in ----------
+const signBtn = document.getElementById("signBtn");
+signBtn.addEventListener("click", () => signOut(auth));
+
+onAuthStateChanged(auth, (user) => {
+  if (unsub) { unsub(); unsub = null; }
+  const who = document.getElementById("who");
+  if (!user) {
+    who.textContent = ""; signBtn.hidden = true;
+    const inFrame = window.self !== window.top;
+    main.innerHTML = `<div class="card">
+      <h2>Sign in to manage your book</h2>
+      <p class="muted">Use the Google account listed in <code>config.js</code> and your Firestore rules.</p>
+      ${inFrame ? `<p class="status-bad small">Google sign-in doesn't work inside an embed. Open this page in its own tab.</p>` : ""}
+      <button class="btn primary" id="goIn" type="button">Sign in with Google</button>
+    </div>`;
+    document.getElementById("goIn").addEventListener("click", async () => {
+      try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+      catch (e) { toast(e.code === "auth/popup-blocked" ? "Allow pop-ups for this site, then try again." : `Sign-in failed: ${e.code || e.message}`); }
+    });
+    return;
+  }
+  who.textContent = user.email; signBtn.hidden = false;
+  const allowed = TEACHER_EMAILS.map((e) => e.toLowerCase()).includes((user.email || "").toLowerCase());
+  if (!allowed) {
+    main.innerHTML = `<div class="card"><h2>This account can't edit the book</h2>
+      <p class="muted">Sign out and use the account listed in <code>config.js</code>.</p></div>`;
+    return;
+  }
+  unsub = onSnapshot(bookRef, (snap) => {
+    book = snap.exists() ? snap.data() : null;
+    if (!uploading) render();
+  }, (err) => {
+    main.innerHTML = `<div class="card"><h2>Couldn't read the book</h2>
+      <p class="muted">${esc(err.code)}: check that your email is in <code>firestore.rules</code> and the rules are published.</p></div>`;
+  });
+});
+
+// ---------- Main render ----------
+function render() {
+  const groups = L.groupLessons(book || {});
+  const title = (book && book.title) || DEFAULT_BOOK_TITLE;
+
+  const units = groups.map((g) => {
+    const lessons = g.lessons.map((l) => `
+      <div class="t-lesson">
+        <span class="num" aria-hidden="true" style="font-weight:600;color:var(--ink-soft)">${l.num}</span>
+        <div class="row"><strong style="font-weight:500">${esc(l.title)}</strong><span class="spacer"></span>
+          <button class="btn ghost small" data-del="${esc(l.id)}" type="button">Delete lesson</button></div>
+        <div class="sheets">
+          ${l.sheetList.map((s) => `
+            <span class="t-sheet">
+              <label class="switch"><input type="checkbox" role="switch" data-sheet="${esc(s.id)}"
+                ${L.isReleased(book, s.id) ? "checked" : ""}>${esc(s.label)}</label>
+              <a class="btn ghost small" href="${esc(studentLink(s.id))}" target="_blank" rel="noopener">Preview</a>
+              <button class="btn ghost small" data-copy="${esc(s.id)}" type="button">Copy link</button>
+            </span>`).join("")}
+        </div>
+      </div>`).join("");
+    return `<section class="card">
+      <div class="row">
+        <div class="field" style="flex:1 1 260px"><label class="small muted" for="ut-${esc(g.unit)}">Unit ${esc(g.unit)} title</label>
+          <input type="text" id="ut-${esc(g.unit)}" data-unit-title="${esc(g.unit)}" value="${esc(g.unitTitle)}"></div>
+        <button class="btn small" data-all="${esc(g.unit)}" data-on="1" type="button">Open all</button>
+        <button class="btn small" data-all="${esc(g.unit)}" data-on="0" type="button">Close all</button>
+      </div>
+      ${lessons}
+    </section>`;
+  }).join("");
+
+  main.innerHTML = `
+    <section class="card">
+      <div class="row" style="align-items:flex-end">
+        <div class="field" style="flex:1 1 260px"><label class="small muted" for="bookTitle">Book title (students see this)</label>
+          <input type="text" id="bookTitle" value="${esc(title)}"></div>
+        <a class="btn" href="${esc(studentLink(""))}" target="_blank" rel="noopener">Open student book</a>
+      </div>
+      <p class="small muted" style="margin:10px 0 0">Student link for Google Sites: <code>${esc(studentLink(""))}</code></p>
+    </section>
+    ${groups.length ? `<h2 style="margin-top:28px">Assign worksheets</h2>
+      <p class="muted small" style="margin:4px 0 0">Turn a switch on to open that worksheet for students. It shows up on their page right away.</p>
+      ${units}` : ""}
+    <h2 style="margin-top:28px">Add worksheets</h2>
+    ${uploadSection()}
+  `;
+  wire();
+}
+
+function uploadSection() {
+  const plan = pending ? pending.plan : null;
+  const knownUnits = new Set(Object.keys((book && book.units) || {}));
+  const newUnits = plan ? [...new Set(plan.ok.map((p) => p.unit))].filter((u) => !knownUnits.has(u)) : [];
+  const existing = (p) => !!(book && book.lessons && book.lessons[p.lessonId] && book.lessons[p.lessonId].sheets && book.lessons[p.lessonId].sheets[p.sheetId]);
+
+  return `<section class="card">
+    <p style="margin-top:0">Name each PDF like this, one file per worksheet version:</p>
+    <p><code>U4-02 Point-Slope Form - Version A.pdf</code></p>
+    <p class="muted small">Unit number, a dash, the lesson number, the lesson title, then " - " and the version name.
+      Uploading a file with the same name again replaces that worksheet and keeps its switch where it was.
+      Leave answer keys out: anything uploaded here can be opened by students once it's switched on.</p>
+    <label class="drop" id="drop">
+      <input type="file" id="files" accept="application/pdf,.pdf" multiple hidden>
+      <strong>Choose PDFs</strong> <span class="muted">or drop them here</span>
+    </label>
+    ${plan ? `
+      <div class="table-scroll" style="margin-top:16px"><table>
+        <thead><tr><th>Lesson</th><th>Title</th><th>Version</th><th>Status</th></tr></thead>
+        <tbody>
+          ${plan.ok.map((p) => `<tr data-row="${esc(p.sheetId)}"><td>${esc(p.unit)}-${p.num}</td><td>${esc(p.title)}</td><td>${esc(p.label)}</td>
+            <td class="st">${existing(p) ? "Will replace" : "New"}</td></tr>`).join("")}
+          ${plan.rejected.map((r) => `<tr><td colspan="3">${esc(r.name)}</td><td class="status-bad">${esc(r.reason)}</td></tr>`).join("")}
+        </tbody></table></div>
+      ${newUnits.map((u) => `<div class="field" style="margin-top:12px">
+        <label class="small muted" for="nu-${esc(u)}">Title for new Unit ${esc(u)}</label>
+        <input type="text" id="nu-${esc(u)}" data-new-unit="${esc(u)}" value="Unit ${esc(u)}"></div>`).join("")}
+      <div class="row" style="margin-top:14px">
+        <button class="btn primary" id="doUpload" type="button" ${plan.ok.length ? "" : "disabled"}>Upload ${plan.ok.length} worksheet${plan.ok.length === 1 ? "" : "s"}</button>
+        <button class="btn ghost" id="cancelUpload" type="button">Cancel</button>
+        <span id="progress" class="muted small"></span>
+      </div>` : ""}
+  </section>`;
+}
+
+// ---------- Events ----------
+function wire() {
+  const bt = document.getElementById("bookTitle");
+  bt.addEventListener("change", () => saveFields([[new FieldPath("title"), bt.value.trim() || DEFAULT_BOOK_TITLE]], "Book title saved"));
+
+  main.querySelectorAll("[data-unit-title]").forEach((inp) => inp.addEventListener("change", () =>
+    saveFields([[new FieldPath("units", inp.dataset.unitTitle), inp.value.trim() || `Unit ${inp.dataset.unitTitle}`]], "Unit title saved")));
+
+  main.querySelectorAll("input[data-sheet]").forEach((cb) => cb.addEventListener("change", async () => {
+    cb.disabled = true;
+    const ok = await saveFields([[new FieldPath("released", cb.dataset.sheet), cb.checked]],
+      cb.checked ? "Opened for students" : "Closed for students");
+    if (!ok) cb.checked = !cb.checked;
+    cb.disabled = false;
+  }));
+
+  main.querySelectorAll("[data-all]").forEach((b) => b.addEventListener("click", async () => {
+    const on = b.dataset.on === "1";
+    const g = L.groupLessons(book).find((x) => x.unit === b.dataset.all);
+    if (!g) return;
+    if (!confirm(`${on ? "Open" : "Close"} every worksheet in ${g.unitTitle}?`)) return;
+    const pairs = g.lessons.flatMap((l) => l.sheetList.map((s) => [new FieldPath("released", s.id), on]));
+    await saveFields(pairs, on ? "Unit opened" : "Unit closed");
+  }));
+
+  main.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(studentLink(b.dataset.copy)); toast("Link copied"); }
+    catch { prompt("Copy this link:", studentLink(b.dataset.copy)); }
+  }));
+
+  main.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => deleteLesson(b.dataset.del)));
+
+  const drop = document.getElementById("drop");
+  const input = document.getElementById("files");
+  input.addEventListener("change", () => choose([...input.files]));
+  ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => choose([...e.dataTransfer.files].filter((f) => /\.pdf$/i.test(f.name))));
+
+  const cancel = document.getElementById("cancelUpload");
+  if (cancel) cancel.addEventListener("click", () => { pending = null; render(); });
+  const go = document.getElementById("doUpload");
+  if (go) go.addEventListener("click", runUpload);
+}
+
+async function ensureBook() {
+  const snap = await getDoc(bookRef);
+  if (!snap.exists()) {
+    await setDoc(bookRef, { title: DEFAULT_BOOK_TITLE, units: {}, lessons: {}, released: {} });
+  }
+}
+
+async function saveFields(pairs, okMsg) {
+  try {
+    await ensureBook();
+    const flat = pairs.flat();
+    await updateDoc(bookRef, flat[0], flat[1], ...flat.slice(2));
+    if (okMsg) toast(okMsg);
+    return true;
+  } catch (e) {
+    console.error(e);
+    toast(`Didn't save (${e.code || e.message})`);
+    return false;
+  }
+}
+
+function choose(files) {
+  if (!files.length) return;
+  const plan = L.planUpload(files.map((f) => f.name));
+  const byName = new Map(files.map((f) => [f.name, f]));
+  pending = { plan, byName };
+  render();
+  document.getElementById("doUpload")?.scrollIntoView({ block: "center" });
+}
+
+// ---------- Upload: PDF pages -> JPEG images -> Firestore ----------
+async function renderPdfPages(file) {
+  const pdfjs = window.pdfjsLib;
+  pdfjs.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const out = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    let targetW = 1400, img = null, w = 0, h = 0;
+    while (!img) {
+      const base = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: targetW / base.width });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      for (const q of [0.75, 0.65, 0.55, 0.45]) {
+        const url = canvas.toDataURL("image/jpeg", q);
+        if (url.length <= L.MAX_IMAGE_CHARS) { img = url; w = canvas.width; h = canvas.height; break; }
+      }
+      if (!img) {
+        targetW = Math.round(targetW * 0.8);
+        if (targetW < 700) throw new Error(`Page ${i} is too detailed to store. Try a smaller scan.`);
+      }
+    }
+    out.push({ img, w, h });
+  }
+  return out;
+}
+
+async function clearPages(sheetId) {
+  const snap = await getDocs(collection(db, "books", BOOK_ID, "sheets", sheetId, "pages"));
+  await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
+}
+
+async function runUpload() {
+  if (!pending || uploading) return;
+  uploading = true;
+  const { plan, byName } = pending;
+  const go = document.getElementById("doUpload");
+  const cancel = document.getElementById("cancelUpload");
+  const progress = document.getElementById("progress");
+  go.disabled = true; cancel.disabled = true;
+
+  const unitTitles = {};
+  main.querySelectorAll("[data-new-unit]").forEach((i) => (unitTitles[i.dataset.newUnit] = i.value.trim() || `Unit ${i.dataset.newUnit}`));
+
+  let done = 0, failed = 0;
+  try {
+    await ensureBook();
+    for (const [u, t] of Object.entries(unitTitles)) await updateDoc(bookRef, new FieldPath("units", u), t);
+  } catch (e) {
+    toast(`Couldn't start the upload (${e.code || e.message})`);
+    uploading = false; go.disabled = false; cancel.disabled = false; return;
+  }
+
+  for (const p of plan.ok) {
+    const cell = main.querySelector(`tr[data-row="${CSS.escape(p.sheetId)}"] .st`);
+    const set = (txt, cls) => { if (cell) { cell.textContent = txt; cell.className = `st ${cls || ""}`; } };
+    try {
+      set("Converting…");
+      const pages = await renderPdfPages(byName.get(p.name));
+      set("Uploading…");
+      await clearPages(p.sheetId);
+      for (let i = 0; i < pages.length; i++) {
+        const id = `p${String(i + 1).padStart(2, "0")}`;
+        await setDoc(doc(db, "books", BOOK_ID, "sheets", p.sheetId, "pages", id), { n: i + 1, ...pages[i] });
+      }
+      // Add to the table of contents last, so a half-uploaded sheet never appears.
+      await updateDoc(bookRef,
+        new FieldPath("lessons", p.lessonId, "unit"), p.unit,
+        new FieldPath("lessons", p.lessonId, "num"), p.num,
+        new FieldPath("lessons", p.lessonId, "title"), p.title,
+        new FieldPath("lessons", p.lessonId, "sheets", p.sheetId), { label: p.label, pages: pages.length, order: 0 });
+      set(`Done (${pages.length} page${pages.length === 1 ? "" : "s"})`, "status-ok");
+      done++;
+    } catch (e) {
+      console.error(p.name, e);
+      set(`Failed: ${e.code || e.message}`, "status-bad");
+      failed++;
+    }
+    progress.textContent = `${done + failed} of ${plan.ok.length}`;
+  }
+
+  uploading = false;
+  toast(failed ? `${done} uploaded, ${failed} failed` : `${done} worksheets uploaded. They're closed until you switch them on.`);
+  if (!failed) { pending = null; render(); }
+  else { cancel.disabled = false; cancel.textContent = "Done"; }
+}
+
+async function deleteLesson(lessonId) {
+  const l = book && book.lessons && book.lessons[lessonId];
+  if (!l) return;
+  if (!confirm(`Delete "${l.title}" and all its versions? Students lose access right away.`)) return;
+  try {
+    const sheetIds = Object.keys(l.sheets || {});
+    const pairs = [[new FieldPath("lessons", lessonId), deleteField()],
+      ...sheetIds.map((s) => [new FieldPath("released", s), deleteField()])];
+    const flat = pairs.flat();
+    await updateDoc(bookRef, flat[0], flat[1], ...flat.slice(2));
+    for (const s of sheetIds) await clearPages(s);
+    toast("Lesson deleted");
+  } catch (e) {
+    console.error(e);
+    toast(`Couldn't delete (${e.code || e.message})`);
+  }
+}
+</script>
+</body>
+</html>

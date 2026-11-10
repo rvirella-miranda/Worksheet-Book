@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worksheet Book</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app" aria-live="polite">
+  <div class="wrap"><p class="muted">Loading your book…</p></div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, doc, onSnapshot, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { firebaseConfig, DEFAULT_BOOK_ID, DEFAULT_BOOK_TITLE } from "./config.js";
+import * as L from "./lib.js";
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+// Auth is loaded only so a signed-in teacher can preview closed worksheets.
+// Students never sign in.
+const auth = getAuth(app);
+
+const params = new URLSearchParams(location.search);
+const BOOK_ID = (params.get("book") || DEFAULT_BOOK_ID).replace(/[^A-Za-z0-9_-]/g, "");
+const root = document.getElementById("app");
+
+const state = {
+  book: null,
+  groups: [],
+  unit: null,          // unit shown on the contents page
+  openBefore: null,    // Set of lesson ids that were open on the last render
+  justOpened: new Set(),
+  pageCache: new Map() // sheetId -> [{id, img}]
+};
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+));
+
+// ---------- Live book data ----------
+onSnapshot(doc(db, "books", BOOK_ID), (snap) => {
+  state.book = snap.exists() ? snap.data() : { lessons: {}, released: {} };
+  state.groups = L.groupLessons(state.book);
+
+  const openNow = new Set();
+  for (const g of state.groups) for (const l of g.lessons) if (L.lessonOpen(state.book, l)) openNow.add(l.id);
+  state.justOpened = state.openBefore
+    ? new Set([...openNow].filter((id) => !state.openBefore.has(id)))
+    : new Set();
+  state.openBefore = openNow;
+
+  if (!state.unit || !state.groups.some((g) => g.unit === state.unit)) {
+    state.unit = L.defaultUnit(state.book, state.groups);
+  }
+  // Re-render the contents page live. Leave an open worksheet alone.
+  const sid = currentSheetId();
+  if (!sid || !state.viewerShown) route();
+  else if (state.lockedSid === sid && L.isReleased(state.book, sid)) {
+    // A student was waiting on a closed worksheet and it just opened.
+    state.lockedSid = null; route();
+  }
+}, (err) => {
+  console.error(err);
+  root.innerHTML = `<div class="wrap"><div class="notice"><h2>The book didn't load</h2>
+    <p class="muted">Check your internet connection, then reload the page.</p></div></div>`;
+});
+
+let authReady = false;
+onAuthStateChanged(auth, () => {
+  // If a teacher's session appears after a locked sheet was shown, retry it.
+  const first = !authReady;
+  authReady = true;
+  if (!first && currentSheetId()) { state.pageCache.delete(currentSheetId()); route(); }
+});
+
+window.addEventListener("hashchange", () => { state.viewerShown = false; route(); });
+
+function currentSheetId() {
+  const h = decodeURIComponent(location.hash.slice(1));
+  return /^[a-z0-9-]+$/.test(h) ? h : "";
+}
+
+function route() {
+  if (!state.book) return;
+  const sid = currentSheetId();
+  const found = sid ? L.findSheet(state.book, sid) : null;
+  if (found) { state.viewerShown = true; renderViewer(sid, found); }
+  else renderContents();
+}
+
+// ---------- Contents page ----------
+function renderContents() {
+  document.title = state.book.title || DEFAULT_BOOK_TITLE;
+  const title = esc(state.book.title || DEFAULT_BOOK_TITLE);
+
+  if (!state.groups.length) {
+    root.innerHTML = `<div class="wrap"><h1>${title}</h1>
+      <div class="notice"><h2>No worksheets yet</h2>
+      <p class="muted">Your teacher hasn't added any worksheets. Check back after class.</p></div></div>`;
+    return;
+  }
+
+  const group = state.groups.find((g) => g.unit === state.unit) || state.groups[0];
+  const tabs = state.groups.length > 1 ? `
+    <div class="tabs" role="tablist" aria-label="Units">
+      ${state.groups.map((g) => `<button class="tab" role="tab" data-unit="${esc(g.unit)}"
+        aria-selected="${g.unit === group.unit}">${esc(g.unitTitle)}</button>`).join("")}
+    </div>` : "";
+
+  const openCount = group.lessons.filter((l) => L.lessonOpen(state.book, l)).length;
+
+  const rows = group.lessons.map((l) => {
+    const open = L.lessonOpen(state.book, l);
+    const buttons = l.sheetList
+      .filter((s) => L.isReleased(state.book, s.id))
+      .map((s) => `<a class="btn open" href="#${esc(s.id)}">${esc(s.label)}</a>`).join("");
+    return `<li class="lesson ${open ? "is-open" : ""}" id="row-${esc(l.id)}">
+      <span class="num" aria-hidden="true">${l.num}</span>
+      <span class="title">${esc(l.title)}<span class="sr-only">${open ? "" : " (not assigned yet)"}</span></span>
+      <span class="actions">${open ? buttons : `<span class="soon">Not assigned yet</span>`}</span>
+    </li>`;
+  }).join("");
+
+  root.innerHTML = `<div class="wrap">
+    <h1>${title}</h1>
+    ${tabs}
+    <h2 style="margin-top:18px">${esc(group.unitTitle)}</h2>
+    <p class="muted small" style="margin:4px 0 0">${openCount} of ${group.lessons.length} lessons open</p>
+    <div class="graph-wrap">${graphSvg(group, openCount)}</div>
+    <ol class="lessons">${rows}</ol>
+  </div>`;
+
+  root.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => {
+    state.unit = b.dataset.unit; state.justOpened = new Set(); renderContents();
+  }));
+}
+
+// The unit drawn as a line: each lesson is a point; the line is inked in
+// up to the furthest lesson that's open.
+function graphSvg(group, openCount) {
+  const W = 640, H = 190, padL = 34, padR = 22, padT = 26, padB = 30;
+  const n = group.lessons.length;
+  const x0 = padL + 16, x1 = W - padR - 10, y0 = H - padB - 16, y1 = padT + 6;
+  const pts = group.lessons.map((l, i) => {
+    const t = n === 1 ? 0.5 : i / (n - 1);
+    return { l, x: x0 + (x1 - x0) * t, y: y0 + (y1 - y0) * t, open: L.lessonOpen(state.book, l) };
+  });
+
+  let grid = "";
+  for (let x = padL; x <= W - padR; x += 20) grid += `<line class="gridline" x1="${x}" y1="${padT - 10}" x2="${x}" y2="${H - padB}"/>`;
+  for (let y = H - padB; y >= padT - 10; y -= 20) grid += `<line class="gridline" x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}"/>`;
+
+  const lastOpen = pts.reduce((k, p, i) => (p.open ? i : k), -1);
+  const drawn = lastOpen > 0
+    ? `<line class="drawn" x1="${pts[0].x}" y1="${pts[0].y}" x2="${pts[lastOpen].x}" y2="${pts[lastOpen].y}"/>`
+    : "";
+
+  const dots = pts.map((p) => {
+    const cls = `pt ${p.open ? "open" : "locked"}${state.justOpened.has(p.l.id) ? " just-opened" : ""}`;
+    const label = `<text class="pt-label" x="${p.x}" y="${p.y - 13}">${p.l.num}</text>`;
+    const circle = `<circle class="${cls}" cx="${p.x}" cy="${p.y}" r="7"/>`;
+    if (!p.open) return `<g>${circle}${label}</g>`;
+    const first = p.l.sheetList.find((s) => L.isReleased(state.book, s.id));
+    return `<a href="#${esc(first.id)}" aria-label="Lesson ${p.l.num}: ${esc(p.l.title)}">${circle}${label}</a>`;
+  }).join("");
+
+  return `<svg class="graph" viewBox="0 0 ${W} ${H}" role="img"
+    aria-label="${openCount} of ${n} lessons in this unit are open">
+    ${grid}
+    <line class="axis" x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}"/>
+    <line class="axis" x1="${padL}" y1="${H - padB}" x2="${padL}" y2="${padT - 10}"/>
+    <line class="track" x1="${pts[0].x}" y1="${pts[0].y}" x2="${pts[n - 1].x}" y2="${pts[n - 1].y}"/>
+    ${drawn}
+    ${dots}
+  </svg>`;
+}
+
+// ---------- Worksheet viewer ----------
+async function renderViewer(sid, { lesson, sheet }) {
+  const released = L.isReleased(state.book, sid);
+  const siblings = Object.entries(lesson.sheets || {})
+    .map(([id, s]) => ({ id, ...s }))
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.label.localeCompare(b.label));
+  const switcher = siblings.length > 1 ? siblings
+    .filter((s) => L.isReleased(state.book, s.id) || s.id === sid)
+    .map((s) => `<a class="btn ${s.id === sid ? "primary" : ""}" href="#${esc(s.id)}"
+      ${s.id === sid ? 'aria-current="page"' : ""}>${esc(s.label)}</a>`).join("") : "";
+
+  document.title = `${lesson.title} (${sheet.label})`;
+  root.innerHTML = `
+    <div class="bar no-print"><div class="bar-inner">
+      <a class="btn ghost" href="#">← Contents</a>
+      <div class="where">
+        <div class="t">Lesson ${lesson.num}: ${esc(lesson.title)}</div>
+        <div class="muted small">${esc(sheet.label)}</div>
+      </div>
+      ${switcher}
+      <button class="btn" id="printBtn" type="button">Print</button>
+      <a class="btn" id="tabBtn" href="${esc(location.href)}" target="_blank" rel="noopener">Open in new tab</a>
+    </div></div>
+    <div id="flag"></div>
+    <div class="sheet-pages" id="pages">
+      ${Array.from({ length: sheet.pages || 2 }, () => `<div class="skeleton"></div>`).join("")}
+    </div>`;
+  window.scrollTo(0, 0);
+  document.getElementById("printBtn").addEventListener("click", () => window.print());
+
+  const pagesEl = document.getElementById("pages");
+  try {
+    let pages = state.pageCache.get(sid);
+    if (!pages) {
+      const snap = await getDocs(collection(db, "books", BOOK_ID, "sheets", sid, "pages"));
+      pages = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => a.id.localeCompare(b.id));
+      state.pageCache.set(sid, pages);
+    }
+    if (currentSheetId() !== sid) return; // student moved on while loading
+    if (!pages.length) throw Object.assign(new Error("empty"), { code: "empty" });
+    pagesEl.innerHTML = pages.map((p, i) =>
+      `<img src="${p.img}" alt="${esc(lesson.title)}, ${esc(sheet.label)}, page ${i + 1}" width="${p.w || 1400}" height="${p.h || 1812}">`
+    ).join("");
+    if (!released) {
+      document.getElementById("flag").innerHTML =
+        `<div class="preview-flag">Teacher preview. Students can't open this worksheet yet.</div>`;
+    }
+  } catch (err) {
+    if (currentSheetId() !== sid) return;
+    const locked = err.code === "permission-denied";
+    if (locked) state.lockedSid = sid;
+    pagesEl.innerHTML = `<div class="notice">
+      <h2>${locked ? "This worksheet isn't open yet" : "This worksheet didn't load"}</h2>
+      <p class="muted">${locked
+        ? "Your teacher will open it when it's assigned."
+        : "Check your internet connection, then reload the page."}</p>
+      <p><a class="btn" href="#">Back to contents</a></p></div>`;
+    if (!locked) console.error(err);
+  }
+}
+</script>
+<style>.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}</style>
+</body>
+</html>
