@@ -98,22 +98,15 @@ function renderContents() {
   document.title = state.book.title || DEFAULT_BOOK_TITLE;
   const title = esc(state.book.title || DEFAULT_BOOK_TITLE);
   const head = `
-    <div class="app-head">
-      <div class="app-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#5d4a2e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 5.5c2.5-1 5.5-1 9 1v13c-3.5-2-6.5-2-9-1z"/><path d="M21 5.5c-2.5-1-5.5-1-9 1v13c3.5-2 6.5-2 9-1z"/>
-          <path d="M14.5 14.5l2-2.5 1.5 1 1.5-2.5" stroke="#647024"/>
-        </svg>
-      </div>
-      <div class="app-title">
-        <h1>${title}</h1>
-        <div class="sub">Worksheets for Mrs. Miranda\u2019s math classes</div>
-      </div>
-    </div>`;
+    <header class="hero">
+      <div class="eyebrow">Mrs. Miranda\u2019s Class</div>
+      <h1>${title}</h1>
+      <p class="tagline">Think. Plan. Solve. Check. New worksheets show up here as soon as they\u2019re assigned.</p>
+    </header>`;
 
   if (!state.groups.length) {
     root.innerHTML = `<div class="wrap">${head}
-      <div class="notice"><h2>No worksheets yet</h2>
+      <div class="notice taped"><h2>No worksheets yet</h2>
       <p class="muted">Your teacher hasn\u2019t added any worksheets. Check back after class.</p></div></div>`;
     return;
   }
@@ -125,24 +118,19 @@ function renderContents() {
         aria-selected="${g.unit === group.unit}" title="${esc(g.unitTitle)}">Unit ${esc(g.unit)}</button>`).join("")}
     </div>` : "";
 
-  const openLessons = group.lessons.filter((l) => L.lessonOpen(state.book, l));
-  const openCount = openLessons.length;
+  const openCount = group.lessons.filter((l) => L.lessonOpen(state.book, l)).length;
   const openSheets = group.lessons.reduce((n, l) => n + l.sheetList.filter((s) => L.isReleased(state.book, s.id)).length, 0);
 
   const cards = group.lessons.map((l, i) => {
     const open = L.lessonOpen(state.book, l);
-    const released = l.sheetList.filter((s) => L.isReleased(state.book, s.id));
-    const versions = l.sheetList.length;
-    const buttons = released.map((s) => `<a class="btn open" href="#${esc(s.id)}">${esc(s.label)}</a>`).join("");
-    return `<li class="lesson ${open ? `is-open s${(i % 5) + 1}` : ""}" id="row-${esc(l.id)}">
-      <div class="strip"><span>Lesson ${l.num}</span><span>${versions} version${versions === 1 ? "" : "s"}</span></div>
-      <div class="body">
-        <div class="title">${esc(l.title)}</div>
-        <div class="foot">
-          ${open
-            ? `<span class="actions">${buttons}</span><span class="pill open"><span class="dot"></span>Open</span>`
-            : `<span class="pill">Not assigned yet</span>`}
-        </div>
+    const buttons = l.sheetList
+      .filter((s) => L.isReleased(state.book, s.id))
+      .map((s) => `<a class="btn open" href="#${esc(s.id)}">${esc(s.label)} </a>`).join("");
+    return `<li class="lesson ${open ? `is-open taped s${(i % 5) + 1}` : ""}" id="row-${esc(l.id)}">
+      <div class="eyebrow">Lesson ${l.num}</div>
+      <div class="title">${esc(l.title)}</div>
+      <div class="foot">
+        ${open ? `<span class="actions">${buttons}</span>` : `<span class="soon">Not assigned yet</span>`}
       </div>
     </li>`;
   }).join("");
@@ -153,10 +141,14 @@ function renderContents() {
     <div class="stats">
       <div class="stat"><div class="n">${openCount}</div><div class="l">Lessons open</div></div>
       <div class="stat"><div class="n">${openSheets}</div><div class="l">Worksheets open</div></div>
-      <div class="stat"><div class="n">${group.lessons.length}</div><div class="l">Lessons in this unit</div></div>
+      <div class="stat"><div class="n">${group.lessons.length}</div><div class="l">In this unit</div></div>
     </div>
-    <div class="section"><h2>${esc(group.unitTitle)}</h2><span class="tag">${openCount} of ${group.lessons.length} lessons open</span></div>
-    <div class="graph-card">${graphSvg(group, openCount)}</div>
+    <div class="section">
+      <div class="eyebrow plum">This unit</div>
+      <h2>${esc(group.unitTitle)}</h2>
+      <div class="count">${openCount} of ${group.lessons.length} lessons open</div>
+    </div>
+    <div class="graph-card taped">${graphSvg(group, openCount)}</div>
     <ol class="lessons">${cards}</ol>
   </div>`;
 
@@ -256,7 +248,7 @@ async function renderViewer(sid, { lesson, sheet }) {
     if (currentSheetId() !== sid) return;
     const locked = err.code === "permission-denied";
     if (locked) state.lockedSid = sid;
-    pagesEl.innerHTML = `<div class="notice">
+    pagesEl.innerHTML = `<div class="notice taped">
       <h2>${locked ? "This worksheet isn't open yet" : "This worksheet didn't load"}</h2>
       <p class="muted">${locked
         ? "Your teacher will open it when it's assigned."
