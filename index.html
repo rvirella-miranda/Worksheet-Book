@@ -29,6 +29,17 @@ const params = new URLSearchParams(location.search);
 const BOOK_ID = (params.get("book") || DEFAULT_BOOK_ID).replace(/[^A-Za-z0-9_-]/g, "");
 const root = document.getElementById("app");
 
+// Link to this book's teacher panel. It opens in a new tab because Google
+// sign-in doesn't work inside a Google Sites embed.
+function teacherLink() {
+  const u = new URL("teacher.html", location.href);
+  if (BOOK_ID !== DEFAULT_BOOK_ID) u.searchParams.set("book", BOOK_ID);
+  return u.toString();
+}
+const footer = () => `<footer class="page-foot">
+  <a class="teacher-link" href="${esc(teacherLink())}" target="_blank" rel="noopener">Teacher</a>
+</footer>`;
+
 const state = {
   book: null,
   groups: [],
@@ -107,7 +118,7 @@ function renderContents() {
   if (!state.groups.length) {
     root.innerHTML = `<div class="wrap">${head}
       <div class="notice taped"><h2>No worksheets yet</h2>
-      <p class="muted">Your teacher hasn\u2019t added any worksheets. Check back after class.</p></div></div>`;
+      <p class="muted">Your teacher hasn\u2019t added any worksheets. Check back after class.</p></div>${footer()}</div>`;
     return;
   }
 
@@ -150,6 +161,7 @@ function renderContents() {
     </div>
     <div class="graph-card taped">${graphSvg(group, openCount)}</div>
     <ol class="lessons">${cards}</ol>
+    ${footer()}
   </div>`;
 
   root.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => {
