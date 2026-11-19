@@ -315,3 +315,8 @@ code { background: var(--seg); padding: 1px 6px; border-radius: 6px; font-size: 
   .sheet-pages img { border: 0; border-radius: 0; box-shadow: none; width: 100%; max-height: 10.5in; object-fit: contain; break-after: page; page-break-after: always; }
   .sheet-pages img:last-child { break-after: auto; page-break-after: auto; }
 }
+
+/* ---------- Footer with the quiet teacher link ---------- */
+.page-foot { margin-top: 48px; text-align: center; font-size: 0.82rem; color: var(--ink-faint); }
+.teacher-link { color: var(--ink-faint); text-decoration: underline; text-underline-offset: 3px; font-weight: 500; }
+.teacher-link:hover { color: var(--eyebrow-plum); }
