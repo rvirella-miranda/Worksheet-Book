@@ -241,6 +241,11 @@ async function chooseTicketFile(file) {
   if (!file) return;
   let pack = null;
   try { pack = JSON.parse(await file.text()); } catch { toast("That file isn\u2019t a readable exit-ticket pack."); return; }
+  if (pack && pack.book && pack.book !== BOOK_ID) {
+    const name = pack.book === "prealgebra" ? "Pre-Algebra" : pack.book === "algebra1" ? "Algebra 1" : pack.book;
+    toast(`That pack is for the ${name} book. Open the ${name} teacher panel to add it.`);
+    return;
+  }
   ticketPending = { plan: L.validateTicketPack(pack) };
   render();
   document.getElementById("doTickets")?.scrollIntoView({ block: "center" });
