@@ -294,10 +294,10 @@ async function renderTicket(lessonId, lesson) {
       <section class="et-card part s3 taped">
         <div class="eyebrow">Part 2 \u00b7 Show what you know</div>
         <p class="et-prompt">${esc(q.stem).replace(/\n/g, "<br>")}</p>
-        ${q.image ? `<img class="et-img" src="${esc(q.image)}" alt="Graph for this question">` : ""}
+        ${q.image ? `<img class="et-img" src="${esc(q.image)}" alt="${esc(q.imageAlt || "Picture for this question")}">` : ""}
         ${letters.length ? `<fieldset class="et-choices"><legend class="sr-only">Choose one answer</legend>
-          ${letters.map((k) => `<label class="et-choice"><input type="radio" name="choice" value="${k}" required>
-            <span class="letter">${k}</span><span class="txt">${esc(q.choices[k])}</span></label>`).join("")}
+          ${letters.map((k) => { const pic = q.choiceImages && q.choiceImages[k]; return `<label class="et-choice${pic ? " has-pic" : ""}"><input type="radio" name="choice" value="${k}" required>
+            <span class="letter">${k}</span><span class="txt">${pic ? `<img class="et-choice-img" src="${esc(pic)}" alt="Choice ${k}${q.choices[k] ? `: ${esc(q.choices[k])}` : ""}">` : ""}${esc(q.choices[k])}</span></label>`; }).join("")}
         </fieldset>` : ""}
         <label class="et-field"><span class="et-label">${esc(q.explain || "Explain your thinking.")}</span>
           <textarea name="explain" rows="3" maxlength="${L.LIMITS.explain}" required></textarea></label>

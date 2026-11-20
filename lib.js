@@ -137,6 +137,11 @@ export function ticketReleased(book, lessonId) {
   return !!(l && l.ticket && isReleased(book, ticketIdFor(lessonId)));
 }
 
+// Firestore documents max out at 1 MiB; leave headroom.
+export const MAX_TICKET_CHARS = 900_000;
+// Picture budgets used by the teacher panel when shrinking uploads.
+export const IMAGE_BUDGET = { question: { maxW: 1000, chars: 380_000 }, choice: { maxW: 520, chars: 120_000 } };
+
 // Limits shared with firestore.rules
 export const LIMITS = { name: 60, period: 30, summary: 2000, explain: 2000 };
 
@@ -157,7 +162,11 @@ export function validateTicketPack(pack) {
     if (letters.length && (letters.length < 2 || letters.some((k) => !/^[A-F]$/.test(k)))) {
       errors.push(`${where}: choices must be lettered A\u2013F`); continue;
     }
-    if (q.image && !/^data:image\/(svg\+xml|png|jpeg);base64,/.test(q.image)) { errors.push(`${where}: image must be a data URL`); continue; }
+    const isImg = (v) => typeof v === "string" && /^data:image\/(svg\+xml|png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v);
+    if (q.image && !isImg(q.image)) { errors.push(`${where}: image must be a data URL`); continue; }
+    const ci = q.choiceImages || {};
+    if (Object.entries(ci).some(([k, v]) => !letters.includes(k) || !isImg(v))) { errors.push(`${where}: answer-choice pictures must match a lettered choice`); continue; }
+    if (letters.some((k) => typeof q.choices[k] !== "string" || (!q.choices[k].trim() && !ci[k]))) { errors.push(`${where}: every answer choice needs text or a picture`); continue; }
     const k = t.key || {};
     if (letters.length && !letters.includes(k.correct)) { errors.push(`${where}: answer key doesn\u2019t match a choice`); continue; }
     ok.push({
@@ -166,13 +175,19 @@ export function validateTicketPack(pack) {
         summary: t.summary.trim(),
         question: {
           stem: q.stem.trim(),
-          ...(q.image ? { image: q.image } : {}),
+          ...(q.image ? { image: q.image, imageAlt: String(q.imageAlt || "Picture for this question").trim().slice(0, 200) } : {}),
           ...(letters.length ? { choices: q.choices } : {}),
+          ...(letters.length && Object.keys(ci).length ? { choiceImages: ci } : {}),
           explain: (q.explain || "Explain your thinking.").trim(),
         },
       },
       key: { correct: k.correct || "", why: k.why || "", wrong: k.wrong || {} },
     });
+    const size = JSON.stringify(ok[ok.length - 1].ticket).length;
+    if (size > MAX_TICKET_CHARS) {
+      ok.pop();
+      errors.push(`${where}: pictures are too large together (${Math.round(size / 1000)} KB; limit ${Math.round(MAX_TICKET_CHARS / 1000)} KB). Use fewer or smaller pictures.`);
+    }
   }
   ok.sort((a, b) => a.lessonId.localeCompare(b.lessonId));
   return { ok, errors };

@@ -409,3 +409,16 @@ code { background: var(--seg); padding: 1px 6px; border-radius: 6px; font-size: 
 .ed-correct { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 700; }
 .ed-correct input { accent-color: var(--eyebrow-sage); width: 18px; height: 18px; }
 .ed-img img { max-width: 180px; border: 2px solid var(--grid-strong); border-radius: 8px; background: #fff; }
+
+/* ---------- Pictures in exit tickets ---------- */
+.et-choices:has(.has-pic) { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.et-choices:has(.has-pic) .et-choice { align-items: flex-start; }
+.et-choice.has-pic .txt { display: flex; flex-direction: column; gap: 6px; }
+.et-choice-img { width: 100%; max-width: 240px; background: #fff; border: 1px solid var(--grid-strong); border-radius: 8px; }
+.ed-pic { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ed-pic img { max-width: 180px; max-height: 140px; border: 2px solid var(--grid-strong); border-radius: 8px; background: #fff; }
+.ed-choice .ed-pic { grid-column: 2 / 3; }
+.ed-choice .ed-pic img { max-width: 120px; max-height: 90px; }
+.ed-hint { font-size: 0.8rem; color: var(--ink-faint); }
+.res .thumb { max-height: 46px; max-width: 70px; vertical-align: middle; border: 1px solid var(--grid-strong); border-radius: 4px; background: #fff; margin-left: 4px; }
+.res-q img { max-width: 220px; margin-top: 8px; border: 1px solid var(--grid-strong); border-radius: 6px; background: #fff; }

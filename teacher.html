@@ -313,11 +313,12 @@ function resultsHTML(lesson) {
     <div><div class="eyebrow plum" style="margin-bottom:6px">Comfort ratings</div>
       <div class="bars">${L.RATINGS.map((r) => bar(`r${r.value}`, esc(r.label), sum.ratings[r.value], sum.total)).join("")}</div></div>
     ${letters.length ? `<div><div class="eyebrow plum" style="margin-bottom:6px">Part 2 answers \u00b7 ${sum.correct} of ${sum.answered} correct</div>
-      <div class="res-q"><div class="stem">${esc(q.stem)}</div></div>
+      <div class="res-q"><div class="stem">${esc(q.stem)}</div>${q.image ? `<img src="${esc(q.image)}" alt="${esc(q.imageAlt || "")}">` : ""}</div>
       <div class="bars" style="margin-top:8px">${letters.map((k) => {
         const right = data.key && data.key.correct === k;
         const why = right ? (data.key.why ? `Correct. ${esc(data.key.why)}` : "Correct.") : esc((data.key && data.key.wrong && data.key.wrong[k]) || "");
-        return bar(right ? "correct" : "", `${k}. ${esc(q.choices[k])}${right ? " \u2713" : ""}`, sum.choices[k] || 0, sum.answered, why);
+        const pic = q.choiceImages && q.choiceImages[k] ? `<img class="thumb" src="${esc(q.choiceImages[k])}" alt="">` : "";
+        return bar(right ? "correct" : "", `${k}. ${esc(q.choices[k])}${pic}${right ? " \u2713" : ""}`, sum.choices[k] || 0, sum.answered, why);
       }).join("")}</div></div>` : ""}
     ${pool.length ? `<div class="table-scroll"><table>
       <thead><tr><th>Name</th>${periods.length ? "<th>Period</th>" : ""}<th>Rating</th>${letters.length ? "<th>Answer</th>" : ""}<th>Summary</th><th>Explanation</th></tr></thead>
@@ -348,17 +349,38 @@ function downloadCSV(lesson) {
 // ---------- Exit tickets: editor ----------
 const LETTERS = ["A", "B", "C", "D", "E", "F"];
 function blankDraft() {
-  return { summary: "", stem: "", explain: "Explain how you know.", image: "", removeImage: false,
-           choices: [{ text: "", note: "" }, { text: "", note: "" }, { text: "", note: "" }, { text: "", note: "" }],
-           correct: 0, why: "" };
+  const c = () => ({ text: "", note: "", image: "" });
+  return { summary: "", stem: "", explain: "Explain how you know.", image: "", imageAlt: "",
+           choices: [c(), c(), c(), c()], correct: 0, why: "" };
+}
+
+// Shrinks a picture (file or pasted screenshot) so the whole ticket fits in Firestore.
+// Draws onto a white canvas, tries PNG (crisp for graphs), then JPEG, then smaller sizes.
+async function pictureToDataURL(blob, budget) {
+  if (!/^image\//.test(blob.type)) throw new Error("That file isn\u2019t a picture.");
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("That picture couldn\u2019t be opened.")); i.src = url; });
+    let w = Math.min(budget.maxW, img.naturalWidth || budget.maxW);
+    for (let tries = 0; tries < 8; tries++) {
+      const h = Math.max(1, Math.round(w * ((img.naturalHeight || w) / (img.naturalWidth || w))));
+      const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(w)); c.height = h;
+      const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height);
+      const png = c.toDataURL("image/png");
+      if (png.length <= budget.chars) return png;
+      for (const q of [0.9, 0.8, 0.7]) { const j = c.toDataURL("image/jpeg", q); if (j.length <= budget.chars) return j; }
+      w = w * 0.8;
+    }
+    throw new Error("That picture is too detailed to fit. Try cropping it smaller.");
+  } finally { URL.revokeObjectURL(url); }
 }
 function draftFrom(ticket, key) {
   const q = (ticket && ticket.question) || {};
   const letters = q.choices ? Object.keys(q.choices).sort() : [];
   return {
     summary: (ticket && ticket.summary) || "", stem: q.stem || "", explain: q.explain || "Explain how you know.",
-    image: q.image || "", removeImage: false,
-    choices: letters.map((k) => ({ text: q.choices[k], note: (key && key.wrong && key.wrong[k]) || "" })),
+    image: q.image || "", imageAlt: q.image ? (q.imageAlt || "") : "",
+    choices: letters.map((k) => ({ text: q.choices[k], note: (key && key.wrong && key.wrong[k]) || "", image: (q.choiceImages && q.choiceImages[k]) || "" })),
     correct: Math.max(0, letters.indexOf(key && key.correct)), why: (key && key.why) || "",
   };
 }
@@ -394,14 +416,26 @@ function editorHTML(lesson) {
       <textarea data-ed="summary" rows="2" maxlength="400">${esc(d.summary)}</textarea></label>
     <label class="field"><span class="small muted">Part 2 \u00b7 Question</span>
       <textarea data-ed="stem" rows="3" maxlength="800">${esc(d.stem)}</textarea></label>
-    ${d.image ? `<div class="row ed-img"><img src="${esc(d.image)}" alt="Graph for this question">
-      <label class="switch"><input type="checkbox" data-ed="removeImage" ${d.removeImage ? "checked" : ""}>Remove this graph</label></div>` : ""}
+    <div class="field"><span class="small muted">Picture for the question (optional): a graph, table, or diagram</span>
+      <div class="ed-pic">
+        ${d.image ? `<img src="${esc(d.image)}" alt="${esc(d.imageAlt || "Question picture")}">` : ""}
+        <label class="btn small">${d.image ? "Replace picture" : "+ Add picture"}<input type="file" accept="image/*" data-pic="q" hidden></label>
+        ${d.image ? `<button class="btn ghost small" data-pic-remove="q" type="button">Remove picture</button>` : ""}
+        <span class="ed-hint">Or click in the question box and paste a screenshot (Ctrl+V).</span>
+      </div>
+      ${d.image ? `<input type="text" data-ed="imageAlt" value="${esc(d.imageAlt)}" maxlength="200" placeholder="Describe the picture for screen readers, e.g. Line through (0, −1) with slope 3, shaded above" aria-label="Picture description">` : ""}
+    </div>
     <div class="field"><span class="small muted">Answer choices \u00b7 select the correct one. The note under each wrong answer is only for you.</span>
       ${d.choices.map((c, i) => `
-        <div class="ed-choice">
+        <div class="ed-choice" data-choice-row="${i}">
           <label class="ed-correct" title="Correct answer"><input type="radio" name="ed-correct" data-ed-correct="${i}" ${d.correct === i ? "checked" : ""}><span>${LETTERS[i]}</span></label>
-          <input type="text" data-ed-choice="${i}" value="${esc(c.text)}" maxlength="200" aria-label="Choice ${LETTERS[i]}" placeholder="Choice ${LETTERS[i]}">
+          <input type="text" data-ed-choice="${i}" value="${esc(c.text)}" maxlength="200" aria-label="Choice ${LETTERS[i]}" placeholder="Choice ${LETTERS[i]}${c.image ? " (optional with a picture)" : ""}">
           <button class="btn ghost small" data-ed-remove="${i}" type="button" aria-label="Remove choice ${LETTERS[i]}">Remove</button>
+          <div class="ed-pic">
+            ${c.image ? `<img src="${esc(c.image)}" alt="Choice ${LETTERS[i]} picture">` : ""}
+            <label class="btn ghost small">${c.image ? "Replace picture" : "+ Picture"}<input type="file" accept="image/*" data-pic="${i}" hidden></label>
+            ${c.image ? `<button class="btn ghost small" data-pic-remove="${i}" type="button">Remove picture</button>` : ""}
+          </div>
           ${d.correct === i ? "" : `<input type="text" class="ed-note" data-ed-note="${i}" value="${esc(c.note)}" maxlength="200" placeholder="What does choosing ${LETTERS[i]} usually mean?" aria-label="Note for choice ${LETTERS[i]}">`}
         </div>`).join("")}
       <div class="row">
@@ -430,7 +464,6 @@ function wireEditor() {
   box.querySelectorAll("[data-ed]").forEach((el) => el.addEventListener("input", () => {
     d[el.dataset.ed] = el.type === "checkbox" ? el.checked : el.value;
   }));
-  box.querySelectorAll("[data-ed=removeImage]").forEach((el) => el.addEventListener("change", () => { d.removeImage = el.checked; }));
   box.querySelectorAll("[data-ed-choice]").forEach((el) => el.addEventListener("input", () => { d.choices[+el.dataset.edChoice].text = el.value; }));
   box.querySelectorAll("[data-ed-note]").forEach((el) => el.addEventListener("input", () => { d.choices[+el.dataset.edNote].note = el.value; }));
   box.querySelectorAll("[data-ed-correct]").forEach((el) => el.addEventListener("change", () => { d.correct = +el.dataset.edCorrect; render(); }));
@@ -441,21 +474,50 @@ function wireEditor() {
   }));
   box.querySelector("[data-ed-add]")?.addEventListener("click", () => { d.choices.push({ text: "", note: "" }); render(); });
   box.querySelector("[data-ed-save]")?.addEventListener("click", saveEditor);
+
+  const setPicture = async (target, blob) => {
+    const isQ = target === "q";
+    try {
+      const url = await pictureToDataURL(blob, isQ ? L.IMAGE_BUDGET.question : L.IMAGE_BUDGET.choice);
+      if (isQ) d.image = url; else d.choices[+target].image = url;
+      editing.error = ""; render(); toast("Picture added");
+    } catch (e) { editing.error = e.message; render(); }
+  };
+  box.querySelectorAll("input[data-pic]").forEach((inp) => inp.addEventListener("change", () => {
+    if (inp.files[0]) setPicture(inp.dataset.pic, inp.files[0]);
+  }));
+  box.querySelectorAll("[data-pic-remove]").forEach((b) => b.addEventListener("click", () => {
+    const t = b.dataset.picRemove;
+    if (t === "q") { d.image = ""; d.imageAlt = ""; } else d.choices[+t].image = "";
+    render();
+  }));
+  box.addEventListener("paste", (e) => {
+    const item = [...(e.clipboardData ? e.clipboardData.items : [])].find((it) => it.kind === "file" && /^image\//.test(it.type));
+    if (!item) return;                       // ordinary text paste
+    e.preventDefault();
+    const row = e.target.closest && e.target.closest("[data-choice-row]");
+    setPicture(row ? row.dataset.choiceRow : "q", item.getAsFile());
+  });
 }
 
 async function saveEditor() {
   const lessonId = editing.lessonId, d = editing.draft;
-  const choices = {}, wrong = {};
-  d.choices.forEach((c, i) => { choices[LETTERS[i]] = c.text.trim(); if (i !== d.correct && c.note.trim()) wrong[LETTERS[i]] = c.note.trim(); });
+  const choices = {}, wrong = {}, choiceImages = {};
+  d.choices.forEach((c, i) => {
+    choices[LETTERS[i]] = c.text.trim();
+    if (c.image) choiceImages[LETTERS[i]] = c.image;
+    if (i !== d.correct && c.note.trim()) wrong[LETTERS[i]] = c.note.trim();
+  });
   const problems = [];
   if (!d.summary.trim()) problems.push("a summary prompt");
   if (!d.stem.trim()) problems.push("a question");
   if (d.choices.length === 1) problems.push("at least 2 answer choices (or remove them all for a written answer)");
-  if (d.choices.some((c) => !c.text.trim())) problems.push("text for every answer choice");
+  if (d.choices.some((c) => !c.text.trim() && !c.image)) problems.push("text or a picture for every answer choice");
   if (problems.length) { editing.error = `Still needs ${problems.join(", ")}.`; render(); return; }
   const pack = { tickets: { [lessonId]: {
     summary: d.summary, question: { stem: d.stem, explain: d.explain || "Explain your thinking.",
-      ...(d.image && !d.removeImage ? { image: d.image } : {}), ...(d.choices.length ? { choices } : {}) },
+      ...(d.image ? { image: d.image, imageAlt: d.imageAlt.trim() || "Picture for this question" } : {}),
+      ...(d.choices.length ? { choices } : {}), ...(Object.keys(choiceImages).length ? { choiceImages } : {}) },
     key: d.choices.length ? { correct: LETTERS[d.correct], why: d.why.trim(), wrong } : {} } } };
   const { ok, errors } = L.validateTicketPack(pack);
   if (!ok.length) { editing.error = errors[0] || "Something in this ticket isn\u2019t valid."; render(); return; }
