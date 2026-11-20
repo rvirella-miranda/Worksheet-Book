@@ -14,7 +14,7 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getFirestore, doc, onSnapshot, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, doc, getDoc, onSnapshot, collection, getDocs, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { firebaseConfig, DEFAULT_BOOK_ID, DEFAULT_BOOK_TITLE } from "./config.js";
 import * as L from "./lib.js";
@@ -71,7 +71,7 @@ onSnapshot(doc(db, "books", BOOK_ID), (snap) => {
   // Re-render the contents page live. Leave an open worksheet alone.
   const sid = currentSheetId();
   if (!sid || !state.viewerShown) route();
-  else if (state.lockedSid === sid && L.isReleased(state.book, sid)) {
+  else if (state.lockedSid === sid && (L.isReleased(state.book, sid) || (L.isTicketId(sid) && L.ticketReleased(state.book, L.lessonIdFromTicket(sid))))) {
     // A student was waiting on a closed worksheet and it just opened.
     state.lockedSid = null; route();
   }
@@ -99,6 +99,11 @@ function currentSheetId() {
 function route() {
   if (!state.book) return;
   const sid = currentSheetId();
+  if (sid && L.isTicketId(sid)) {
+    const lessonId = L.lessonIdFromTicket(sid);
+    const lesson = state.book.lessons && state.book.lessons[lessonId];
+    if (lesson && lesson.ticket) { state.viewerShown = true; renderTicket(lessonId, lesson); return; }
+  }
   const found = sid ? L.findSheet(state.book, sid) : null;
   if (found) { state.viewerShown = true; renderViewer(sid, found); }
   else renderContents();
@@ -136,7 +141,9 @@ function renderContents() {
     const open = L.lessonOpen(state.book, l);
     const buttons = l.sheetList
       .filter((s) => L.isReleased(state.book, s.id))
-      .map((s) => `<a class="btn open" href="#${esc(s.id)}">${esc(s.label)} </a>`).join("");
+      .map((s) => `<a class="btn open" href="#${esc(s.id)}">${esc(s.label)} </a>`).join("")
+      + (L.ticketReleased(state.book, l.id)
+        ? `<a class="btn ticket" href="#${esc(L.ticketIdFor(l.id))}">Exit ticket</a>` : "");
     return `<li class="lesson ${open ? `is-open taped s${(i % 5) + 1}` : ""}" id="row-${esc(l.id)}">
       <div class="eyebrow">Lesson ${l.num}</div>
       <div class="title">${esc(l.title)}</div>
@@ -207,6 +214,152 @@ function graphSvg(group, openCount) {
     ${drawn}
     ${dots}
   </svg>`;
+}
+
+
+// ---------- Exit ticket ----------
+const NAME_KEY = `et-name:${BOOK_ID}`, PERIOD_KEY = `et-period:${BOOK_ID}`;
+const doneKey = (lessonId) => `et-done:${BOOK_ID}:${lessonId}`;
+function store(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} }
+function recall(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } }
+const ticketCache = new Map();
+
+async function renderTicket(lessonId, lesson) {
+  const tid = L.ticketIdFor(lessonId);
+  document.title = `Exit ticket: ${lesson.title}`;
+  root.innerHTML = `
+    <div class="bar no-print"><div class="bar-inner">
+      <a class="btn ghost" href="#">\u2190 All lessons</a>
+      <div class="where">
+        <div class="t">Lesson ${lesson.num}: ${esc(lesson.title)}</div>
+        <div class="small">Exit ticket</div>
+      </div>
+    </div></div>
+    <div id="flag"></div>
+    <div class="wrap ticket-wrap" id="tk"><div class="skeleton" style="height:320px"></div></div>`;
+  window.scrollTo(0, 0);
+  const box = document.getElementById("tk");
+
+  let t = ticketCache.get(lessonId);
+  try {
+    if (!t) {
+      const snap = await getDoc(doc(db, "books", BOOK_ID, "tickets", lessonId));
+      if (!snap.exists()) throw Object.assign(new Error("missing"), { code: "not-found" });
+      t = snap.data(); ticketCache.set(lessonId, t);
+    }
+  } catch (err) {
+    if (currentSheetId() !== tid) return;
+    const locked = err.code === "permission-denied";
+    if (locked) state.lockedSid = tid;
+    box.innerHTML = `<div class="notice taped"><h2>${locked ? "This exit ticket isn\u2019t open yet" : "This exit ticket didn\u2019t load"}</h2>
+      <p class="muted">${locked ? "Your teacher will open it near the end of class." : "Check your internet connection, then reload the page."}</p>
+      <p><a class="btn" href="#">Back to all lessons</a></p></div>`;
+    return;
+  }
+  if (currentSheetId() !== tid) return;
+  if (!L.ticketReleased(state.book, lessonId)) {
+    document.getElementById("flag").innerHTML = `<div class="preview-flag">Teacher preview. Students can\u2019t open this exit ticket yet.</div>`;
+  }
+
+  const periods = (state.book.periods || []).filter(Boolean);
+  const q = t.question || {};
+  const letters = q.choices ? Object.keys(q.choices).sort() : [];
+  const already = recall(doneKey(lessonId));
+
+  box.innerHTML = `
+    <header class="hero ticket-hero">
+      <div class="eyebrow">Exit ticket</div>
+      <h1 class="ticket-title">${esc(lesson.title)}</h1>
+      <p class="tagline">Show what you learned today. Your teacher reads every one.</p>
+    </header>
+    ${already ? `<p class="again-note">You already turned this in. You can send a new one if you want to change your answers.</p>` : ""}
+    <form id="etForm" novalidate>
+      <section class="et-card who">
+        <div class="et-row">
+          <label class="et-field"><span class="et-label">Your name</span>
+            <input type="text" name="name" maxlength="${L.LIMITS.name}" autocomplete="name" value="${esc(recall(NAME_KEY))}" required></label>
+          ${periods.length ? `<label class="et-field"><span class="et-label">Class period</span>
+            <select name="period" required><option value="">Choose\u2026</option>
+            ${periods.map((p) => `<option ${recall(PERIOD_KEY) === p ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></label>` : ""}
+        </div>
+      </section>
+
+      <section class="et-card part s2 taped">
+        <div class="eyebrow">Part 1 \u00b7 Summary</div>
+        <p class="et-prompt">${esc(t.summary)}</p>
+        <textarea name="summary" rows="4" maxlength="${L.LIMITS.summary}" required aria-label="Summary"></textarea>
+      </section>
+
+      <section class="et-card part s3 taped">
+        <div class="eyebrow">Part 2 \u00b7 Show what you know</div>
+        <p class="et-prompt">${esc(q.stem).replace(/\n/g, "<br>")}</p>
+        ${q.image ? `<img class="et-img" src="${esc(q.image)}" alt="Graph for this question">` : ""}
+        ${letters.length ? `<fieldset class="et-choices"><legend class="sr-only">Choose one answer</legend>
+          ${letters.map((k) => `<label class="et-choice"><input type="radio" name="choice" value="${k}" required>
+            <span class="letter">${k}</span><span class="txt">${esc(q.choices[k])}</span></label>`).join("")}
+        </fieldset>` : ""}
+        <label class="et-field"><span class="et-label">${esc(q.explain || "Explain your thinking.")}</span>
+          <textarea name="explain" rows="3" maxlength="${L.LIMITS.explain}" required></textarea></label>
+      </section>
+
+      <section class="et-card part s4 taped">
+        <div class="eyebrow">Part 3 \u00b7 How do you feel about this?</div>
+        <fieldset class="et-ratings"><legend class="sr-only">How comfortable are you with this lesson?</legend>
+          ${L.RATINGS.map((r) => `<label class="et-rating r${r.value}"><input type="radio" name="rating" value="${r.value}" required>
+            <span class="dots" aria-hidden="true">${"\u25cf".repeat(r.value)}${"\u25cb".repeat(4 - r.value)}</span>
+            <span class="txt">${esc(r.label)}</span></label>`).join("")}
+        </fieldset>
+      </section>
+
+      <p class="et-error" id="etErr" role="alert" hidden></p>
+      <div class="et-submit"><button class="btn primary big" type="submit" id="etSend">Turn it in \u2192</button></div>
+    </form>`;
+
+  const form = document.getElementById("etForm");
+  const err = document.getElementById("etErr");
+  form.addEventListener("input", () => { err.hidden = true; });
+  form.addEventListener("change", () => { err.hidden = true; });
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(form);
+    const data = {
+      lessonId,
+      name: String(f.get("name") || "").trim().slice(0, L.LIMITS.name),
+      summary: String(f.get("summary") || "").trim().slice(0, L.LIMITS.summary),
+      explain: String(f.get("explain") || "").trim().slice(0, L.LIMITS.explain),
+      rating: parseInt(f.get("rating"), 10),
+    };
+    if (periods.length) data.period = String(f.get("period") || "");
+    if (letters.length) data.choice = String(f.get("choice") || "");
+    const missing = [];
+    if (!data.name) missing.push("your name");
+    if (periods.length && !data.period) missing.push("your class period");
+    if (!data.summary) missing.push("Part 1");
+    if ((letters.length && !data.choice) || !data.explain) missing.push("Part 2");
+    if (!data.rating) missing.push("Part 3");
+    if (missing.length) {
+      err.textContent = `Almost there! Still need: ${missing.join(", ")}.`; err.hidden = false; err.scrollIntoView({ block: "center" }); return;
+    }
+    err.hidden = true;
+    const btn = document.getElementById("etSend"); btn.disabled = true; btn.textContent = "Sending\u2026";
+    try {
+      await addDoc(collection(db, "books", BOOK_ID, "responses"), { ...data, createdAt: serverTimestamp() });
+      store(NAME_KEY, data.name); if (data.period) store(PERIOD_KEY, data.period); store(doneKey(lessonId), "1");
+      box.innerHTML = `<div class="notice taped done">
+        <div class="eyebrow">Turned in</div>
+        <h2>Nice work, ${esc(data.name.split(" ")[0])}!</h2>
+        <p class="tagline">You said: \u201c${esc(L.ratingLabel(data.rating))}.\u201d ${data.rating <= 2 ? "Thanks for being honest. Your teacher will help you with this." : "Keep it up!"}</p>
+        <p><a class="btn" href="#">Back to all lessons</a></p></div>`;
+      window.scrollTo(0, 0);
+    } catch (e2) {
+      console.error(e2);
+      btn.disabled = false; btn.textContent = "Turn it in \u2192";
+      err.textContent = e2.code === "permission-denied"
+        ? "This exit ticket just closed, so it couldn\u2019t be turned in. Let your teacher know."
+        : "That didn\u2019t send. Check your internet connection and try again.";
+      err.hidden = false;
+    }
+  });
 }
 
 // ---------- Worksheet viewer ----------
