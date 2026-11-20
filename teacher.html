@@ -54,7 +54,10 @@ let ticketPending = null;   // exit-ticket pack waiting for confirmation
 const openResults = new Set();
 const resCache = new Map(); // lessonId -> {ticket, key, responses}
 let resPeriod = "";
-let editing = null;        // { lessonId, draft, loading, error }
+let editing = null;
+let roster = {};            // studentId -> {name, period}
+let rosterUnsub = null;
+let rosterMsg = "";        // { lessonId, draft, loading, error }
 
 document.getElementById("bookLine").textContent = `Book id: ${BOOK_ID}`;
 
@@ -100,6 +103,11 @@ onAuthStateChanged(auth, (user) => {
       <p class="muted">Sign out and use the account listed in <code>config.js</code>.</p></div>`;
     return;
   }
+  if (rosterUnsub) rosterUnsub();
+  rosterUnsub = onSnapshot(doc(db, "books", BOOK_ID, "roster", "main"), (snap) => {
+    roster = (snap.exists() && snap.data().students) || {};
+    if (!uploading && !document.activeElement?.matches?.("textarea[data-roster]")) render();
+  }, () => {});
   unsub = onSnapshot(bookRef, (snap) => {
     book = snap.exists() ? snap.data() : null;
     if (!uploading) render();
@@ -163,6 +171,7 @@ function render() {
       <div class="field" style="margin-top:14px"><label class="small muted" for="periods">Class periods for exit tickets (separate with commas, e.g. <em>3rd, 5th</em>). Leave blank to skip.</label>
         <input type="text" id="periods" value="${esc(((book && book.periods) || []).join(", "))}"></div>
     </section>
+    ${rosterSection()}
     ${groups.length ? `<h2 style="margin-top:28px">Assign worksheets</h2>
       <p class="muted small" style="margin:4px 0 0">Turn a switch on to open that worksheet for students. It shows up on their page right away.</p>
       ${units}` : ""}
@@ -296,7 +305,8 @@ async function loadResults(lessonId) {
 function resultsHTML(lesson) {
   const data = resCache.get(lesson.id);
   if (!data) return `<p class="muted small">Loading results\u2026</p>`;
-  const periods = [...new Set(data.responses.map((r) => r.period).filter(Boolean))].sort();
+  const periods = [...new Set([...data.responses.map((r) => r.period), ...Object.values(roster).map((x) => x.period)].filter(Boolean))].sort();
+  const part = Object.keys(roster).length ? L.participation(roster, data.responses, resPeriod || null) : null;
   const pool = L.latestPerStudent(data.responses).filter((r) => !resPeriod || r.period === resPeriod)
     .sort((a, b) => (a.period || "").localeCompare(b.period || "") || a.name.localeCompare(b.name));
   const sum = L.summarizeResponses(pool, data.key);
@@ -315,6 +325,9 @@ function resultsHTML(lesson) {
       <button class="btn small" data-refresh="${esc(lesson.id)}" type="button">Refresh</button>
       <button class="btn small" data-csv="${esc(lesson.id)}" type="button" ${pool.length ? "" : "disabled"}>Download spreadsheet</button>
     </div>
+    ${part ? `<div class="participation"><div class="eyebrow plum" style="margin-bottom:6px">Turned in · ${part.turnedIn.length} of ${part.total}${resPeriod ? ` in ${esc(resPeriod)}` : ""}</div>
+      ${part.missing.length ? `<div class="small"><strong>Not turned in yet:</strong> ${part.missing.map((m) => `<span class="pill-name">${esc(m.name)}${!resPeriod && m.period ? ` <span class="muted">(${esc(m.period)})</span>` : ""}</span>`).join(" ")}</div>`
+        : `<div class="small status-ok"><strong>Everyone${resPeriod ? ` in ${esc(resPeriod)}` : ""} turned it in.</strong></div>`}</div>` : ""}
     <div><div class="eyebrow plum" style="margin-bottom:6px">Comfort ratings</div>
       <div class="bars">${L.RATINGS.map((r) => bar(`r${r.value}`, esc(r.label), sum.ratings[r.value], sum.total)).join("")}</div></div>
     ${letters.length ? `<div><div class="eyebrow plum" style="margin-bottom:6px">Part 2 answers \u00b7 ${sum.correct} of ${sum.answered} correct</div>
@@ -326,22 +339,26 @@ function resultsHTML(lesson) {
         return bar(right ? "correct" : "", `${k}. ${esc(q.choices[k])}${pic}${right ? " \u2713" : ""}`, sum.choices[k] || 0, sum.answered, why);
       }).join("")}</div></div>` : ""}
     ${pool.length ? `<div class="table-scroll"><table>
-      <thead><tr><th>Name</th>${periods.length ? "<th>Period</th>" : ""}<th>Rating</th>${letters.length ? "<th>Answer</th>" : ""}<th>Summary</th><th>Explanation</th></tr></thead>
+      <thead><tr><th>Name</th>${periods.length ? "<th>Period</th>" : ""}<th>Rating</th>${letters.length ? "<th>Answer</th>" : ""}<th>Summary</th><th>Explanation</th><th></th></tr></thead>
       <tbody>${pool.map((r) => `<tr><td>${esc(r.name)}</td>${periods.length ? `<td>${esc(r.period || "")}</td>` : ""}
         <td>${esc(L.ratingLabel(r.rating))}</td>
         ${letters.length ? `<td>${esc(r.choice || "")} ${r.choice ? (data.key && r.choice === data.key.correct ? '<span class="tick">\u2713</span>' : '<span class="cross">\u2717</span>') : ""}</td>` : ""}
-        <td class="long">${esc(r.summary || "")}</td><td class="long">${esc(r.explain || "")}</td></tr>`).join("")}</tbody>
+        <td class="long">${esc(r.summary || "")}</td><td class="long">${esc(r.explain || "")}</td>
+        <td><button class="btn ghost small" type="button" data-clear="${esc(r.id)}" data-clear-lesson="${esc(lesson.id)}" data-clear-name="${esc(r.name)}" title="Let this student turn it in again">Clear</button></td></tr>`).join("")}</tbody>
     </table></div>
-    <p class="muted small" style="margin:0">If a student turned this in more than once, you\u2019re seeing their latest response. The spreadsheet has every response.</p>` : ""}`;
+    <p class="muted small" style="margin:0">${Object.keys(roster).length ? "Clear a response to let that student turn it in again (for example, if they picked the wrong name)." : "If a student turned this in more than once, you\u2019re seeing their latest response. The spreadsheet has every response."}</p>` : ""}`;
 }
 
 function downloadCSV(lesson) {
   const data = resCache.get(lesson.id); if (!data) return;
-  const rows = [["Name", "Period", "Turned in", "Rating", "Rating (1-4)", "Answer", "Correct?", "Summary", "Explanation"]];
+  const rows = [["Name", "Period", "Turned in?", "Turned in at", "Rating", "Rating (1-4)", "Answer", "Correct?", "Summary", "Explanation"]];
   [...data.responses].sort((a, b) => a.createdAt - b.createdAt).forEach((r) => rows.push([
-    r.name, r.period || "", r.createdAt ? new Date(r.createdAt).toLocaleString() : "",
+    r.name, r.period || "", "Yes", r.createdAt ? new Date(r.createdAt).toLocaleString() : "",
     L.ratingLabel(r.rating), r.rating, r.choice || "",
     r.choice && data.key ? (r.choice === data.key.correct ? "Yes" : "No") : "", r.summary || "", r.explain || ""]));
+  if (Object.keys(roster).length) {
+    for (const m of L.participation(roster, data.responses).missing) rows.push([m.name, m.period || "", "No", "", "", "", "", "", "", ""]);
+  }
   const blob = new Blob(["\ufeff" + L.toCSV(rows)], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -539,6 +556,52 @@ async function saveEditor() {
   }
 }
 
+
+// ---------- Class roster ----------
+function rosterPeriods() {
+  const set = [...((book && book.periods) || [])];
+  for (const st of Object.values(roster)) if (st.period && !set.includes(st.period)) set.push(st.period);
+  return set.length ? set : [""];
+}
+function rosterSection() {
+  const per = rosterPeriods();
+  const count = Object.keys(roster).length;
+  return `<section class="card" id="rosterCard">
+    <h3 style="margin:0 0 4px">Class roster for exit tickets</h3>
+    <p class="small muted" style="margin:0 0 12px">${count
+      ? `${count} students. Students choose their name from a menu, and each student can turn in each exit ticket once.`
+      : "Paste student names, one per line. Once there\u2019s a roster, students pick their name from a menu instead of typing it, and each student can turn in each exit ticket only once."}
+      Anyone with the student link can see these names, so first name + last initial (like <em>Ana L.</em>) works well.</p>
+    <div class="roster-grid">
+      ${per.map((p) => `<label class="field"><span class="small muted">${p ? esc(p) : "Students"}</span>
+        <textarea data-roster="${esc(p)}" rows="8" spellcheck="false">${esc(L.rosterText(roster, p))}</textarea></label>`).join("")}
+    </div>
+    ${per.length === 1 && per[0] === "" ? `<p class="small muted" style="margin:8px 0 0">Add class periods above to keep a separate list for each one.</p>` : ""}
+    <p class="et-error" id="rosterErr" ${rosterMsg ? "" : "hidden"}>${esc(rosterMsg)}</p>
+    <div class="row" style="margin-top:12px"><button class="btn primary" id="saveRoster" type="button">Save roster</button></div>
+  </section>`;
+}
+async function saveRoster() {
+  const text = {};
+  main.querySelectorAll("textarea[data-roster]").forEach((ta) => { text[ta.dataset.roster] = ta.value; });
+  const { students, problems } = L.buildRoster(text, roster);
+  if (problems.length) { rosterMsg = problems.slice(0, 4).join(" "); render(); return; }
+  const removed = Object.keys(roster).filter((id) => !students[id]).length;
+  if (removed && !confirm(`${removed} student${removed === 1 ? "" : "s"} will be removed from the roster. Their past responses stay in Results. Continue?`)) return;
+  rosterMsg = "";
+  try {
+    await setDoc(doc(db, "books", BOOK_ID, "roster", "main"), { students });
+    render(); toast(`Roster saved: ${Object.keys(students).length} students`);
+  } catch (e) { rosterMsg = `Didn\u2019t save (${e.code || e.message})`; render(); }
+}
+async function clearResponse(lessonId, responseId, name) {
+  if (!confirm(`Clear ${name}\u2019s response? They\u2019ll be able to turn this exit ticket in again.`)) return;
+  try {
+    await deleteDoc(doc(db, "books", BOOK_ID, "responses", responseId));
+    await loadResults(lessonId); render(); toast("Response cleared");
+  } catch (e) { toast(`Couldn\u2019t clear (${e.code || e.message})`); }
+}
+
 // ---------- Events ----------
 function wire() {
   const bt = document.getElementById("bookTitle");
@@ -591,6 +654,11 @@ function wire() {
   }));
   main.querySelectorAll("[data-csv]").forEach((b) => b.addEventListener("click", () => downloadCSV(book.lessons[b.dataset.csv] ? { id: b.dataset.csv, ...book.lessons[b.dataset.csv] } : null)));
   main.querySelectorAll("[data-res-period]").forEach((sel) => sel.addEventListener("change", () => { resPeriod = sel.value; render(); }));
+  document.getElementById("saveRoster")?.addEventListener("click", saveRoster);
+  main.querySelectorAll("textarea[data-roster]").forEach((ta) => ta.addEventListener("input", () => {
+    rosterMsg = ""; const e = document.getElementById("rosterErr"); if (e) e.hidden = true;
+  }));
+  main.querySelectorAll("[data-clear]").forEach((b) => b.addEventListener("click", () => clearResponse(b.dataset.clearLesson, b.dataset.clear, b.dataset.clearName)));
 
   const tdrop = document.getElementById("tdrop");
   const tfile = document.getElementById("tfile");

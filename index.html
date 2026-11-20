@@ -14,7 +14,7 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getFirestore, doc, getDoc, onSnapshot, collection, getDocs, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, getDocs, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { firebaseConfig, DEFAULT_BOOK_ID, DEFAULT_BOOK_TITLE } from "./config.js";
 import * as L from "./lib.js";
@@ -80,6 +80,13 @@ onSnapshot(doc(db, "books", BOOK_ID), (snap) => {
   root.innerHTML = `<div class="wrap"><div class="notice"><h2>The book didn't load</h2>
     <p class="muted">Check your internet connection, then reload the page.</p></div></div>`;
 });
+
+// Class roster (public names only). When it has students, exit tickets use a
+// name menu and allow one response per student.
+state.roster = {};
+onSnapshot(doc(db, "books", BOOK_ID, "roster", "main"), (snap) => {
+  state.roster = (snap.exists() && snap.data().students) || {};
+}, () => { state.roster = {}; });
 
 let authReady = false;
 onAuthStateChanged(auth, () => {
@@ -219,7 +226,7 @@ function graphSvg(group, openCount) {
 
 
 // ---------- Exit ticket ----------
-const NAME_KEY = `et-name:${BOOK_ID}`, PERIOD_KEY = `et-period:${BOOK_ID}`;
+const NAME_KEY = `et-name:${BOOK_ID}`, PERIOD_KEY = `et-period:${BOOK_ID}`, SID_KEY = `et-student:${BOOK_ID}`;
 const doneKey = (lessonId) => `et-done:${BOOK_ID}:${lessonId}`;
 function store(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} }
 function recall(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } }
@@ -262,10 +269,24 @@ async function renderTicket(lessonId, lesson) {
     document.getElementById("flag").innerHTML = `<div class="preview-flag">Teacher preview. Students can\u2019t open this exit ticket yet.</div>`;
   }
 
-  const periods = (state.book.periods || []).filter(Boolean);
+  // The roster may still be loading on a fresh page; give it a moment.
+  if (!Object.keys(state.roster).length) {
+    try { const rs = await getDoc(doc(db, "books", BOOK_ID, "roster", "main")); if (rs.exists()) state.roster = rs.data().students || {}; } catch {}
+    if (currentSheetId() !== tid) return;
+  }
+  const useRoster = Object.keys(state.roster).length > 0;
+  const rosterPeriods = [...new Set(Object.values(state.roster).map((s) => s.period || ""))];
+  const order = (state.book.periods || []);
+  rosterPeriods.sort((a, b) => ((order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99)) || a.localeCompare(b));
+  const periods = useRoster ? rosterPeriods.filter(Boolean) : (state.book.periods || []).filter(Boolean);
   const q = t.question || {};
   const letters = q.choices ? Object.keys(q.choices).sort() : [];
-  const already = recall(doneKey(lessonId));
+  const savedSid = recall(SID_KEY);
+  const savedStudent = useRoster && state.roster[savedSid] ? { id: savedSid, ...state.roster[savedSid] } : null;
+  const already = useRoster ? (savedStudent && recall(`${doneKey(lessonId)}:${savedSid}`)) : recall(doneKey(lessonId));
+  const startPeriod = savedStudent ? (savedStudent.period || "") : recall(PERIOD_KEY);
+  const nameOptions = (per) => L.rosterList(state.roster, per)
+    .map((s) => `<option value="${esc(s.id)}" ${savedStudent && savedStudent.id === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("");
 
   box.innerHTML = `
     <header class="hero ticket-hero">
@@ -273,16 +294,22 @@ async function renderTicket(lessonId, lesson) {
       <h1 class="ticket-title">${esc(lesson.title)}</h1>
       <p class="tagline">Show what you learned today. Your teacher reads every one.</p>
     </header>
-    ${already ? `<p class="again-note">You already turned this in. You can send a new one if you want to change your answers.</p>` : ""}
+    ${already ? `<p class="again-note">${useRoster ? `${esc(savedStudent.name)}, you already turned this one in. Thanks!` : "You already turned this in. You can send a new one if you want to change your answers."}</p>` : ""}
     <form id="etForm" novalidate>
       <section class="et-card who">
         <div class="et-row">
-          <label class="et-field"><span class="et-label">Your name</span>
-            <input type="text" name="name" maxlength="${L.LIMITS.name}" autocomplete="name" value="${esc(recall(NAME_KEY))}" required></label>
           ${periods.length ? `<label class="et-field"><span class="et-label">Class period</span>
             <select name="period" required><option value="">Choose\u2026</option>
-            ${periods.map((p) => `<option ${recall(PERIOD_KEY) === p ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></label>` : ""}
+            ${periods.map((p) => `<option ${startPeriod === p ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></label>` : ""}
+          ${useRoster ? `<label class="et-field"><span class="et-label">Your name</span>
+            <select name="student" required ${periods.length && !startPeriod ? "disabled" : ""}>
+              <option value="">${periods.length && !startPeriod ? "Choose your class period first" : "Choose your name\u2026"}</option>
+              ${periods.length && !startPeriod ? "" : nameOptions(periods.length ? startPeriod : null)}
+            </select></label>`
+          : `<label class="et-field"><span class="et-label">Your name</span>
+            <input type="text" name="name" maxlength="${L.LIMITS.name}" autocomplete="name" value="${esc(recall(NAME_KEY))}" required></label>`}
         </div>
+        ${useRoster ? `<p class="et-hint">Don\u2019t see your name? Tell your teacher.</p>` : ""}
       </section>
 
       <section class="et-card part s2 taped">
@@ -319,22 +346,32 @@ async function renderTicket(lessonId, lesson) {
   const form = document.getElementById("etForm");
   const err = document.getElementById("etErr");
   form.addEventListener("input", () => { err.hidden = true; });
+  if (useRoster && periods.length) {
+    const perSel = form.querySelector("select[name=period]"), stuSel = form.querySelector("select[name=student]");
+    perSel.addEventListener("change", () => {
+      stuSel.disabled = !perSel.value;
+      stuSel.innerHTML = `<option value="">${perSel.value ? "Choose your name\u2026" : "Choose your class period first"}</option>` + (perSel.value ? nameOptions(perSel.value) : "");
+    });
+  }
   form.addEventListener("change", () => { err.hidden = true; });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const f = new FormData(form);
+    const sid = useRoster ? String(f.get("student") || "") : "";
+    const picked = sid && state.roster[sid];
     const data = {
       lessonId,
-      name: String(f.get("name") || "").trim().slice(0, L.LIMITS.name),
+      name: useRoster ? (picked ? picked.name : "") : String(f.get("name") || "").trim().slice(0, L.LIMITS.name),
       summary: String(f.get("summary") || "").trim().slice(0, L.LIMITS.summary),
       explain: String(f.get("explain") || "").trim().slice(0, L.LIMITS.explain),
       rating: parseInt(f.get("rating"), 10),
     };
-    if (periods.length) data.period = String(f.get("period") || "");
+    if (useRoster) { if (picked) { data.studentId = sid; data.period = picked.period || ""; } }
+    else if (periods.length) data.period = String(f.get("period") || "");
     if (letters.length) data.choice = String(f.get("choice") || "");
     const missing = [];
+    if (periods.length && !(useRoster ? f.get("period") : data.period)) missing.push("your class period");
     if (!data.name) missing.push("your name");
-    if (periods.length && !data.period) missing.push("your class period");
     if (!data.summary) missing.push("Part 1");
     if ((letters.length && !data.choice) || !data.explain) missing.push("Part 2");
     if (!data.rating) missing.push("Part 3");
@@ -344,8 +381,14 @@ async function renderTicket(lessonId, lesson) {
     err.hidden = true;
     const btn = document.getElementById("etSend"); btn.disabled = true; btn.textContent = "Sending\u2026";
     try {
-      await addDoc(collection(db, "books", BOOK_ID, "responses"), { ...data, createdAt: serverTimestamp() });
-      store(NAME_KEY, data.name); if (data.period) store(PERIOD_KEY, data.period); store(doneKey(lessonId), "1");
+      if (useRoster) {
+        await setDoc(doc(db, "books", BOOK_ID, "responses", L.responseIdFor(lessonId, sid)), { ...data, createdAt: serverTimestamp() });
+        store(SID_KEY, sid); store(`${doneKey(lessonId)}:${sid}`, "1");
+      } else {
+        await addDoc(collection(db, "books", BOOK_ID, "responses"), { ...data, createdAt: serverTimestamp() });
+        store(doneKey(lessonId), "1");
+      }
+      store(NAME_KEY, data.name); if (data.period) store(PERIOD_KEY, data.period);
       box.innerHTML = `<div class="notice taped done">
         <div class="eyebrow">Turned in</div>
         <h2>Nice work, ${esc(data.name.split(" ")[0])}!</h2>
@@ -355,9 +398,12 @@ async function renderTicket(lessonId, lesson) {
     } catch (e2) {
       console.error(e2);
       btn.disabled = false; btn.textContent = "Turn it in \u2192";
-      err.textContent = e2.code === "permission-denied"
-        ? "This exit ticket just closed, so it couldn\u2019t be turned in. Let your teacher know."
-        : "That didn\u2019t send. Check your internet connection and try again.";
+      const stillOpen = L.ticketReleased(state.book, lessonId);
+      err.textContent = e2.code !== "permission-denied"
+        ? "That didn\u2019t send. Check your internet connection and try again."
+        : !stillOpen ? "This exit ticket just closed, so it couldn\u2019t be turned in. Let your teacher know."
+        : useRoster ? `${data.name} already turned in this exit ticket. If that wasn\u2019t you, tell your teacher so they can reset it.`
+        : "This couldn\u2019t be turned in. Let your teacher know.";
       err.hidden = false;
     }
   });

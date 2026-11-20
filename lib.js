@@ -213,7 +213,7 @@ export function summarizeResponses(responses, key) {
 export function latestPerStudent(responses) {
   const map = new Map();
   for (const r of responses) {
-    const k = `${(r.name || "").trim().toLowerCase()}|${(r.period || "").toLowerCase()}`;
+    const k = r.studentId ? `id:${r.studentId}` : `${(r.name || "").trim().toLowerCase()}|${(r.period || "").toLowerCase()}`;
     const prev = map.get(k);
     if (!prev || (r.createdAt || 0) > (prev.createdAt || 0)) map.set(k, r);
   }
@@ -227,4 +227,70 @@ export function toCSV(rows) {
     return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
   };
   return rows.map((r) => r.map(cell).join(",")).join("\r\n");
+}
+
+// ---------------------------------------------------------------------------
+// Class roster (students pick their name; one response per exit ticket)
+// ---------------------------------------------------------------------------
+export const ROSTER_LIMITS = { name: 40, students: 400 };
+
+// Response documents use a fixed id, so a second submission from the same
+// student is a write to an existing document, which the rules refuse.
+export const responseIdFor = (lessonId, studentId) => `${lessonId}__${studentId}`;
+
+export function newStudentId(rand = Math.random) {
+  const abc = "abcdefghijkmnpqrstuvwxyz23456789";
+  let s = "s";
+  for (let i = 0; i < 8; i++) s += abc[Math.floor(rand() * abc.length)];
+  return s;
+}
+
+// textByPeriod: { "3rd": "Ana L.\nBen O.", ... }  ("" key when there are no periods)
+// existing: current roster.students map, so students who stay keep their id.
+// Returns { students, problems }.
+export function buildRoster(textByPeriod, existing = {}, idGen = newStudentId) {
+  const students = {}, problems = [];
+  const byKey = new Map(Object.entries(existing || {}).map(([id, s]) => [`${(s.period || "")}|${s.name.trim().toLowerCase()}`, id]));
+  const taken = new Set();
+  let count = 0;
+  for (const [period, text] of Object.entries(textByPeriod || {})) {
+    const seen = new Set();
+    for (const raw of String(text || "").split(/\r?\n/)) {
+      const name = raw.replace(/\t+/g, " ").replace(/\s+/g, " ").trim();
+      if (!name) continue;
+      if (name.length > ROSTER_LIMITS.name) { problems.push(`“${name.slice(0, 20)}…” is longer than ${ROSTER_LIMITS.name} characters.`); continue; }
+      const k = name.toLowerCase();
+      if (seen.has(k)) { problems.push(`${name} is listed twice${period ? ` in ${period}` : ""}.`); continue; }
+      seen.add(k);
+      if (++count > ROSTER_LIMITS.students) { problems.push(`Rosters are limited to ${ROSTER_LIMITS.students} students.`); break; }
+      let id = byKey.get(`${period}|${k}`);
+      while (!id || taken.has(id)) id = idGen();
+      taken.add(id);
+      students[id] = { name, period };
+    }
+  }
+  return { students, problems };
+}
+
+export function rosterText(students, period) {
+  return Object.values(students || {}).filter((s) => (s.period || "") === (period || ""))
+    .map((s) => s.name).sort((a, b) => a.localeCompare(b)).join("\n");
+}
+
+export function rosterList(students, period) {
+  return Object.entries(students || {})
+    .filter(([, s]) => period == null || (s.period || "") === period)
+    .map(([id, s]) => ({ id, ...s }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Who turned in and who didn't, for one exit ticket (optionally one period).
+export function participation(students, responses, period) {
+  const roster = rosterList(students, period ?? null).filter((s) => !period || s.period === period);
+  const done = new Set(responses.filter((r) => r.studentId).map((r) => r.studentId));
+  return {
+    total: roster.length,
+    turnedIn: roster.filter((s) => done.has(s.id)),
+    missing: roster.filter((s) => !done.has(s.id)),
+  };
 }
