@@ -320,3 +320,80 @@ code { background: var(--seg); padding: 1px 6px; border-radius: 6px; font-size: 
 .page-foot { margin-top: 48px; text-align: center; font-size: 0.82rem; color: var(--ink-faint); }
 .teacher-link { color: var(--ink-faint); text-decoration: underline; text-underline-offset: 3px; font-weight: 500; }
 .teacher-link:hover { color: var(--eyebrow-plum); }
+
+/* ---------- Exit tickets ---------- */
+.btn.ticket {
+  background: var(--pill); color: var(--pill-ink); border-color: var(--pill);
+  font-size: 0.78rem; letter-spacing: 0.14em; text-transform: uppercase; padding: 6px 14px;
+}
+.btn.ticket::after { content: "\2192"; letter-spacing: 0; }
+.btn.ticket:hover { filter: brightness(1.15); }
+.btn.big { font-size: 1.02rem; padding: 11px 26px; }
+
+.ticket-wrap { max-width: 760px; }
+.ticket-hero h1.ticket-title { font-size: clamp(1.8rem, 5vw, 2.6rem); }
+.again-note {
+  text-align: center; font-family: var(--serif); font-style: italic; color: var(--ink-soft);
+  background: var(--surface); border: 2px dashed var(--grid-strong); border-radius: var(--radius);
+  padding: 10px 14px; margin: 18px 0 0;
+}
+#etForm { display: grid; gap: 30px; margin-top: 26px; }
+.et-card {
+  --fill: var(--surface); --sh: var(--lav-sh); --tint: var(--eyebrow-plum);
+  background: var(--fill); border: 2px solid var(--outline); border-radius: var(--radius);
+  padding: 22px 20px 20px; box-shadow: 5px 5px 0 var(--sh);
+}
+.et-card.s2 { --fill: var(--mint);   --sh: var(--mint-sh);   --tint: var(--mint-ink);   --t1: var(--pink-t1); --t2: var(--pink-t2); transform: rotate(-0.6deg); }
+.et-card.s3 { --fill: var(--butter); --sh: var(--butter-sh); --tint: var(--butter-ink); --t1: var(--lav-t1);  --t2: var(--lav-t2);  transform: rotate(0.5deg); }
+.et-card.s4 { --fill: var(--lav);    --sh: var(--lav-sh);    --tint: var(--lav-ink);    --t1: var(--mint-t1); --t2: var(--mint-t2); transform: rotate(-0.4deg); }
+.et-card .eyebrow { color: var(--tint); }
+.et-prompt { font-family: var(--serif); font-size: 1.12rem; font-weight: 600; line-height: 1.45; margin: 8px 0 12px; }
+.et-row { display: flex; gap: 14px; flex-wrap: wrap; }
+.et-field { display: flex; flex-direction: column; gap: 6px; flex: 1 1 220px; margin-top: 4px; }
+.et-label { font-size: 0.78rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--tint, var(--eyebrow-plum)); }
+.et-card input[type="text"], .et-card select, .et-card textarea {
+  width: 100%; border: 2px solid var(--outline); border-radius: 10px; background: var(--surface);
+  padding: 10px 12px; font-family: var(--font); font-size: 1rem; color: var(--ink);
+}
+.et-card textarea { resize: vertical; min-height: 92px; line-height: 1.5; }
+.et-img { width: 100%; max-width: 360px; margin: 4px auto 14px; background: #fff; border: 2px solid var(--outline); border-radius: 10px; }
+.et-choices, .et-ratings { border: 0; padding: 0; margin: 0 0 12px; display: grid; gap: 10px; }
+.et-choice, .et-rating {
+  display: flex; align-items: center; gap: 12px; cursor: pointer;
+  background: var(--surface); border: 2px solid var(--grid-strong); border-radius: 12px; padding: 10px 14px;
+}
+.et-choice input, .et-rating input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.et-choice .letter {
+  flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+  border: 2px solid var(--outline); font-weight: 700; font-size: 0.9rem;
+}
+.et-choice .txt { font-size: 1rem; }
+.et-choice:hover, .et-rating:hover { border-color: var(--outline); }
+.et-choice:has(input:checked) { border-color: var(--outline); box-shadow: 3px 3px 0 var(--butter-sh); }
+.et-choice:has(input:checked) .letter { background: var(--pill); color: var(--pill-ink); border-color: var(--pill); }
+.et-choice:has(input:focus-visible), .et-rating:has(input:focus-visible) { outline: 3px solid var(--eyebrow-plum); outline-offset: 2px; }
+.et-ratings { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 10px 0 0; }
+.et-rating { flex-direction: column; text-align: center; gap: 4px; padding: 12px 8px; }
+.et-rating .dots { letter-spacing: 2px; color: var(--lav-ink); font-size: 0.95rem; }
+.et-rating .txt { font-family: var(--serif); font-weight: 600; font-size: 0.98rem; line-height: 1.2; }
+.et-rating:has(input:checked) { background: var(--pill); border-color: var(--pill); color: var(--pill-ink); }
+.et-rating:has(input:checked) .dots { color: var(--pill-ink); }
+@media (max-width: 560px) { .et-ratings { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.et-error { margin: 0; text-align: center; font-weight: 600; color: var(--danger); }
+.et-submit { text-align: center; }
+.notice.done h2 { margin: 6px 0 10px; }
+
+/* ---------- Teacher: exit ticket results ---------- */
+.res { margin-top: 14px; border-top: 2px dashed var(--grid-strong); padding-top: 14px; display: grid; gap: 16px; }
+.res-q { background: var(--paper); border-radius: 10px; padding: 12px 14px; font-size: 0.92rem; }
+.res-q .stem { font-family: var(--serif); font-weight: 600; }
+.bars { display: grid; gap: 6px; }
+.barrow { display: grid; grid-template-columns: 9.5rem 1fr 2.4rem; gap: 10px; align-items: center; font-size: 0.86rem; }
+.bartrack { display: block; height: 14px; background: var(--grid); border-radius: 999px; overflow: hidden; }
+.barfill { display: block; height: 100%; border-radius: 999px; background: var(--lav-t1); }
+.barrow.r4 .barfill { background: var(--mint-t1); } .barrow.r3 .barfill { background: var(--sky-t1); }
+.barrow.r2 .barfill { background: var(--butter-t1); } .barrow.r1 .barfill { background: var(--pink-t1); }
+.barrow.correct .barfill { background: var(--mint-t1); }
+.barrow .why { grid-column: 1 / -1; font-size: 0.8rem; color: var(--ink-soft); margin: -2px 0 4px; }
+.res table td.long { min-width: 220px; white-space: pre-wrap; }
+.tick { color: var(--ok); font-weight: 700; } .cross { color: var(--danger); font-weight: 700; }

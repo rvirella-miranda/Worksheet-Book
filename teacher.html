@@ -26,7 +26,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot,
-  collection, getDocs, FieldPath, deleteField
+  collection, getDocs, FieldPath, deleteField, query, where
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   getAuth, onAuthStateChanged, signInWithPopup, signOut, GoogleAuthProvider
@@ -50,6 +50,10 @@ let book = null;
 let unsub = null;
 let pending = null;      // upload plan waiting for confirmation
 let uploading = false;
+let ticketPending = null;   // exit-ticket pack waiting for confirmation
+const openResults = new Set();
+const resCache = new Map(); // lessonId -> {ticket, key, responses}
+let resPeriod = "";
 
 document.getElementById("bookLine").textContent = `Book id: ${BOOK_ID}`;
 
@@ -123,7 +127,15 @@ function render() {
               <a class="btn ghost small" href="${esc(studentLink(s.id))}" target="_blank" rel="noopener">Preview</a>
               <button class="btn ghost small" data-copy="${esc(s.id)}" type="button">Copy link</button>
             </span>`).join("")}
+          ${l.ticket ? `
+            <span class="t-sheet">
+              <label class="switch"><input type="checkbox" role="switch" data-sheet="${esc(L.ticketIdFor(l.id))}"
+                ${L.isReleased(book, L.ticketIdFor(l.id)) ? "checked" : ""}>Exit ticket</label>
+              <a class="btn ghost small" href="${esc(studentLink(L.ticketIdFor(l.id)))}" target="_blank" rel="noopener">Preview</a>
+              <button class="btn small" data-results="${esc(l.id)}" type="button" aria-expanded="${openResults.has(l.id)}">${openResults.has(l.id) ? "Hide results" : "Results"}</button>
+            </span>` : ""}
         </div>
+        ${openResults.has(l.id) ? `<div class="res" id="res-${esc(l.id)}" style="grid-column:1/-1">${resultsHTML(l)}</div>` : ""}
       </div>`).join("");
     return `<section class="card">
       <div class="row">
@@ -144,12 +156,16 @@ function render() {
         <a class="btn" href="${esc(studentLink(""))}" target="_blank" rel="noopener">Open student book</a>
       </div>
       <p class="small muted" style="margin:10px 0 0">Student link for Google Sites: <code>${esc(studentLink(""))}</code></p>
+      <div class="field" style="margin-top:14px"><label class="small muted" for="periods">Class periods for exit tickets (separate with commas, e.g. <em>3rd, 5th</em>). Leave blank to skip.</label>
+        <input type="text" id="periods" value="${esc(((book && book.periods) || []).join(", "))}"></div>
     </section>
     ${groups.length ? `<h2 style="margin-top:28px">Assign worksheets</h2>
       <p class="muted small" style="margin:4px 0 0">Turn a switch on to open that worksheet for students. It shows up on their page right away.</p>
       ${units}` : ""}
     <h2 style="margin-top:28px">Add worksheets</h2>
     ${uploadSection()}
+    <h2 style="margin-top:28px">Add exit tickets</h2>
+    ${ticketSection()}
   `;
   wire();
 }
@@ -189,6 +205,141 @@ function uploadSection() {
   </section>`;
 }
 
+
+// ---------- Exit tickets: upload ----------
+function ticketSection() {
+  const plan = ticketPending ? ticketPending.plan : null;
+  const lessons = (book && book.lessons) || {};
+  return `<section class="card">
+    <p style="margin-top:0">Upload an exit-ticket pack (a <code>.json</code> file). Each ticket attaches to the lesson with the same unit and lesson number, so upload that unit\u2019s worksheets first. Uploading a pack again replaces those tickets but keeps the responses students already turned in.</p>
+    <label class="drop" id="tdrop">
+      <input type="file" id="tfile" accept="application/json,.json" hidden>
+      <strong>Choose exit-ticket pack</strong> <span class="muted">or drop it here</span>
+    </label>
+    ${plan ? `
+      <div class="table-scroll" style="margin-top:16px"><table>
+        <thead><tr><th>Lesson</th><th>Question</th><th>Status</th></tr></thead>
+        <tbody>
+          ${plan.ok.map((p) => `<tr data-trow="${esc(p.lessonId)}"><td>${esc(p.lessonId.toUpperCase())}${lessons[p.lessonId] ? `<br><span class="muted small">${esc(lessons[p.lessonId].title)}</span>` : ""}</td>
+            <td>${esc(p.ticket.question.stem.slice(0, 110))}${p.ticket.question.stem.length > 110 ? "\u2026" : ""}</td>
+            <td class="st ${lessons[p.lessonId] ? "" : "status-bad"}">${lessons[p.lessonId] ? (lessons[p.lessonId].ticket ? "Will replace" : "New") : "No matching lesson yet"}</td></tr>`).join("")}
+          ${plan.errors.map((e) => `<tr><td colspan="3" class="status-bad">${esc(e)}</td></tr>`).join("")}
+        </tbody></table></div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn primary" id="doTickets" type="button" ${plan.ok.some((p) => lessons[p.lessonId]) ? "" : "disabled"}>Add exit tickets</button>
+        <button class="btn ghost" id="cancelTickets" type="button">Cancel</button>
+        <span id="tprogress" class="muted small"></span>
+      </div>` : ""}
+  </section>`;
+}
+
+async function chooseTicketFile(file) {
+  if (!file) return;
+  let pack = null;
+  try { pack = JSON.parse(await file.text()); } catch { toast("That file isn\u2019t a readable exit-ticket pack."); return; }
+  ticketPending = { plan: L.validateTicketPack(pack) };
+  render();
+  document.getElementById("doTickets")?.scrollIntoView({ block: "center" });
+}
+
+async function runTicketUpload() {
+  if (!ticketPending) return;
+  const lessons = (book && book.lessons) || {};
+  const items = ticketPending.plan.ok.filter((p) => lessons[p.lessonId]);
+  const prog = document.getElementById("tprogress");
+  document.getElementById("doTickets").disabled = true;
+  let done = 0, failed = 0;
+  for (const p of items) {
+    const cell = main.querySelector(`tr[data-trow="${CSS.escape(p.lessonId)}"] .st`);
+    try {
+      await setDoc(doc(db, "books", BOOK_ID, "tickets", p.lessonId), p.ticket);
+      await setDoc(doc(db, "books", BOOK_ID, "ticketKeys", p.lessonId), p.key);
+      await updateDoc(bookRef, new FieldPath("lessons", p.lessonId, "ticket"), true);
+      resCache.delete(p.lessonId);
+      if (cell) { cell.textContent = "Done"; cell.className = "st status-ok"; }
+      done++;
+    } catch (e) {
+      console.error(e); failed++;
+      if (cell) { cell.textContent = `Failed: ${e.code || e.message}`; cell.className = "st status-bad"; }
+    }
+    if (prog) prog.textContent = `${done + failed} of ${items.length}`;
+  }
+  toast(failed ? `${done} added, ${failed} failed` : `${done} exit tickets added. They\u2019re closed until you switch them on.`);
+  if (!failed) { ticketPending = null; render(); }
+}
+
+// ---------- Exit tickets: results ----------
+async function loadResults(lessonId) {
+  const [t, k, r] = await Promise.all([
+    getDoc(doc(db, "books", BOOK_ID, "tickets", lessonId)),
+    getDoc(doc(db, "books", BOOK_ID, "ticketKeys", lessonId)),
+    getDocs(query(collection(db, "books", BOOK_ID, "responses"), where("lessonId", "==", lessonId))),
+  ]);
+  const responses = r.docs.map((d) => {
+    const x = d.data();
+    const ts = x.createdAt && typeof x.createdAt.toMillis === "function" ? x.createdAt.toMillis()
+      : (typeof x.createdAt === "string" ? Date.parse(x.createdAt) : (x.createdAt || 0));
+    return { id: d.id, ...x, createdAt: ts };
+  });
+  resCache.set(lessonId, { ticket: t.exists() ? t.data() : null, key: k.exists() ? k.data() : null, responses });
+}
+
+function resultsHTML(lesson) {
+  const data = resCache.get(lesson.id);
+  if (!data) return `<p class="muted small">Loading results\u2026</p>`;
+  const periods = [...new Set(data.responses.map((r) => r.period).filter(Boolean))].sort();
+  const pool = L.latestPerStudent(data.responses).filter((r) => !resPeriod || r.period === resPeriod)
+    .sort((a, b) => (a.period || "").localeCompare(b.period || "") || a.name.localeCompare(b.name));
+  const sum = L.summarizeResponses(pool, data.key);
+  const q = (data.ticket && data.ticket.question) || {};
+  const letters = q.choices ? Object.keys(q.choices).sort() : [];
+  const pct = (n, d) => (d ? Math.round((100 * n) / d) : 0);
+  const bar = (cls, label, n, d, why) => `<div class="barrow ${cls}"><span>${label}</span>
+    <span class="bartrack"><span class="barfill" style="width:${pct(n, d)}%"></span></span><span>${n}</span>
+    ${why ? `<span class="why">${why}</span>` : ""}</div>`;
+  return `
+    <div class="row">
+      <strong>${sum.total} student${sum.total === 1 ? "" : "s"} turned this in</strong>
+      ${periods.length ? `<select data-res-period aria-label="Filter by class period"><option value="">All periods</option>
+        ${periods.map((p) => `<option ${p === resPeriod ? "selected" : ""}>${esc(p)}</option>`).join("")}</select>` : ""}
+      <span class="spacer"></span>
+      <button class="btn small" data-refresh="${esc(lesson.id)}" type="button">Refresh</button>
+      <button class="btn small" data-csv="${esc(lesson.id)}" type="button" ${pool.length ? "" : "disabled"}>Download spreadsheet</button>
+    </div>
+    <div><div class="eyebrow plum" style="margin-bottom:6px">Comfort ratings</div>
+      <div class="bars">${L.RATINGS.map((r) => bar(`r${r.value}`, esc(r.label), sum.ratings[r.value], sum.total)).join("")}</div></div>
+    ${letters.length ? `<div><div class="eyebrow plum" style="margin-bottom:6px">Part 2 answers \u00b7 ${sum.correct} of ${sum.answered} correct</div>
+      <div class="res-q"><div class="stem">${esc(q.stem)}</div></div>
+      <div class="bars" style="margin-top:8px">${letters.map((k) => {
+        const right = data.key && data.key.correct === k;
+        const why = right ? (data.key.why ? `Correct. ${esc(data.key.why)}` : "Correct.") : esc((data.key && data.key.wrong && data.key.wrong[k]) || "");
+        return bar(right ? "correct" : "", `${k}. ${esc(q.choices[k])}${right ? " \u2713" : ""}`, sum.choices[k] || 0, sum.answered, why);
+      }).join("")}</div></div>` : ""}
+    ${pool.length ? `<div class="table-scroll"><table>
+      <thead><tr><th>Name</th>${periods.length ? "<th>Period</th>" : ""}<th>Rating</th>${letters.length ? "<th>Answer</th>" : ""}<th>Summary</th><th>Explanation</th></tr></thead>
+      <tbody>${pool.map((r) => `<tr><td>${esc(r.name)}</td>${periods.length ? `<td>${esc(r.period || "")}</td>` : ""}
+        <td>${esc(L.ratingLabel(r.rating))}</td>
+        ${letters.length ? `<td>${esc(r.choice || "")} ${r.choice ? (data.key && r.choice === data.key.correct ? '<span class="tick">\u2713</span>' : '<span class="cross">\u2717</span>') : ""}</td>` : ""}
+        <td class="long">${esc(r.summary || "")}</td><td class="long">${esc(r.explain || "")}</td></tr>`).join("")}</tbody>
+    </table></div>
+    <p class="muted small" style="margin:0">If a student turned this in more than once, you\u2019re seeing their latest response. The spreadsheet has every response.</p>` : ""}`;
+}
+
+function downloadCSV(lesson) {
+  const data = resCache.get(lesson.id); if (!data) return;
+  const rows = [["Name", "Period", "Turned in", "Rating", "Rating (1-4)", "Answer", "Correct?", "Summary", "Explanation"]];
+  [...data.responses].sort((a, b) => a.createdAt - b.createdAt).forEach((r) => rows.push([
+    r.name, r.period || "", r.createdAt ? new Date(r.createdAt).toLocaleString() : "",
+    L.ratingLabel(r.rating), r.rating, r.choice || "",
+    r.choice && data.key ? (r.choice === data.key.correct ? "Yes" : "No") : "", r.summary || "", r.explain || ""]));
+  const blob = new Blob(["\ufeff" + L.toCSV(rows)], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `Exit ticket - Unit ${lesson.unit} Lesson ${lesson.num} - ${lesson.title}.csv`.replace(/[\\/:*?"<>|]/g, "");
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
 // ---------- Events ----------
 function wire() {
   const bt = document.getElementById("bookTitle");
@@ -220,6 +371,34 @@ function wire() {
   }));
 
   main.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => deleteLesson(b.dataset.del)));
+
+  const per = document.getElementById("periods");
+  per.addEventListener("change", () => saveFields([[new FieldPath("periods"),
+    per.value.split(",").map((x) => x.trim()).filter(Boolean).slice(0, 12)]], "Class periods saved"));
+
+  main.querySelectorAll("[data-results]").forEach((b) => b.addEventListener("click", async () => {
+    const lid = b.dataset.results;
+    if (openResults.has(lid)) { openResults.delete(lid); render(); return; }
+    openResults.add(lid); render();
+    try { if (!resCache.has(lid)) await loadResults(lid); }
+    catch (e) { console.error(e); toast(`Couldn’t load results (${e.code || e.message})`); }
+    render();
+  }));
+  main.querySelectorAll("[data-refresh]").forEach((b) => b.addEventListener("click", async () => {
+    try { await loadResults(b.dataset.refresh); render(); toast("Results updated"); }
+    catch (e) { toast(`Couldn’t load results (${e.code || e.message})`); }
+  }));
+  main.querySelectorAll("[data-csv]").forEach((b) => b.addEventListener("click", () => downloadCSV(book.lessons[b.dataset.csv] ? { id: b.dataset.csv, ...book.lessons[b.dataset.csv] } : null)));
+  main.querySelectorAll("[data-res-period]").forEach((sel) => sel.addEventListener("change", () => { resPeriod = sel.value; render(); }));
+
+  const tdrop = document.getElementById("tdrop");
+  const tfile = document.getElementById("tfile");
+  tfile.addEventListener("change", () => chooseTicketFile(tfile.files[0]));
+  ["dragenter", "dragover"].forEach((ev) => tdrop.addEventListener(ev, (e) => { e.preventDefault(); tdrop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) => tdrop.addEventListener(ev, (e) => { e.preventDefault(); tdrop.classList.remove("over"); }));
+  tdrop.addEventListener("drop", (e) => chooseTicketFile([...e.dataTransfer.files].find((f) => /\.json$/i.test(f.name))));
+  document.getElementById("cancelTickets")?.addEventListener("click", () => { ticketPending = null; render(); });
+  document.getElementById("doTickets")?.addEventListener("click", runTicketUpload);
 
   const drop = document.getElementById("drop");
   const input = document.getElementById("files");
@@ -362,10 +541,15 @@ async function deleteLesson(lessonId) {
   try {
     const sheetIds = Object.keys(l.sheets || {});
     const pairs = [[new FieldPath("lessons", lessonId), deleteField()],
-      ...sheetIds.map((s) => [new FieldPath("released", s), deleteField()])];
+      ...sheetIds.map((s) => [new FieldPath("released", s), deleteField()]),
+      [new FieldPath("released", L.ticketIdFor(lessonId)), deleteField()]];
     const flat = pairs.flat();
     await updateDoc(bookRef, flat[0], flat[1], ...flat.slice(2));
     for (const s of sheetIds) await clearPages(s);
+    if (l.ticket) {
+      await deleteDoc(doc(db, "books", BOOK_ID, "tickets", lessonId));
+      await deleteDoc(doc(db, "books", BOOK_ID, "ticketKeys", lessonId));
+    }
     toast("Lesson deleted");
   } catch (e) {
     console.error(e);

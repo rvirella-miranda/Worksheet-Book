@@ -73,7 +73,8 @@ export function isReleased(book, sheetId) {
 }
 
 export function lessonOpen(book, lesson) {
-  return lesson.sheetList.some((s) => isReleased(book, s.id));
+  return lesson.sheetList.some((s) => isReleased(book, s.id))
+    || !!(lesson.ticket && isReleased(book, `${lesson.id}-exit-ticket`));
 }
 
 // Which unit the student book should show first: the latest unit with anything
@@ -114,3 +115,101 @@ export function planUpload(fileNames) {
 
 // Keep a Firestore document under the 1 MiB limit (leave headroom for fields).
 export const MAX_IMAGE_CHARS = 900_000;
+
+// ---------------------------------------------------------------------------
+// Exit tickets
+// ---------------------------------------------------------------------------
+export const TICKET_SUFFIX = "-exit-ticket";
+export const ticketIdFor = (lessonId) => `${lessonId}${TICKET_SUFFIX}`;
+export const isTicketId = (id) => typeof id === "string" && id.endsWith(TICKET_SUFFIX);
+export const lessonIdFromTicket = (id) => id.slice(0, -TICKET_SUFFIX.length);
+
+export const RATINGS = [
+  { value: 4, label: "I could teach this" },
+  { value: 3, label: "I\u2019ve got it" },
+  { value: 2, label: "Getting there" },
+  { value: 1, label: "I need help" },
+];
+export const ratingLabel = (v) => (RATINGS.find((r) => r.value === v) || {}).label || "";
+
+export function ticketReleased(book, lessonId) {
+  const l = book && book.lessons && book.lessons[lessonId];
+  return !!(l && l.ticket && isReleased(book, ticketIdFor(lessonId)));
+}
+
+// Limits shared with firestore.rules
+export const LIMITS = { name: 60, period: 30, summary: 2000, explain: 2000 };
+
+// Checks an exit-ticket pack (the JSON file uploaded in the teacher panel).
+// Returns { ok: [{lessonId, ticket, key}], errors: [string] }.
+export function validateTicketPack(pack) {
+  const ok = [], errors = [];
+  if (!pack || typeof pack !== "object" || typeof pack.tickets !== "object") {
+    return { ok, errors: ["This file isn\u2019t an exit-ticket pack."] };
+  }
+  for (const [lessonId, t] of Object.entries(pack.tickets)) {
+    const where = `Lesson ${lessonId}`;
+    if (!/^u[a-z0-9]+-\d{2,3}$/.test(lessonId)) { errors.push(`${where}: bad lesson id`); continue; }
+    if (!t || typeof t.summary !== "string" || !t.summary.trim()) { errors.push(`${where}: missing summary prompt`); continue; }
+    const q = t.question;
+    if (!q || typeof q.stem !== "string" || !q.stem.trim()) { errors.push(`${where}: missing question`); continue; }
+    const letters = q.choices ? Object.keys(q.choices) : [];
+    if (letters.length && (letters.length < 2 || letters.some((k) => !/^[A-F]$/.test(k)))) {
+      errors.push(`${where}: choices must be lettered A\u2013F`); continue;
+    }
+    if (q.image && !/^data:image\/(svg\+xml|png|jpeg);base64,/.test(q.image)) { errors.push(`${where}: image must be a data URL`); continue; }
+    const k = t.key || {};
+    if (letters.length && !letters.includes(k.correct)) { errors.push(`${where}: answer key doesn\u2019t match a choice`); continue; }
+    ok.push({
+      lessonId,
+      ticket: {
+        summary: t.summary.trim(),
+        question: {
+          stem: q.stem.trim(),
+          ...(q.image ? { image: q.image } : {}),
+          ...(letters.length ? { choices: q.choices } : {}),
+          explain: (q.explain || "Explain your thinking.").trim(),
+        },
+      },
+      key: { correct: k.correct || "", why: k.why || "", wrong: k.wrong || {} },
+    });
+  }
+  ok.sort((a, b) => a.lessonId.localeCompare(b.lessonId));
+  return { ok, errors };
+}
+
+// Tallies for the teacher's results view.
+export function summarizeResponses(responses, key) {
+  const ratings = { 4: 0, 3: 0, 2: 0, 1: 0 };
+  const choices = {};
+  let correct = 0, answered = 0;
+  for (const r of responses) {
+    if (ratings[r.rating] !== undefined) ratings[r.rating]++;
+    if (r.choice) {
+      choices[r.choice] = (choices[r.choice] || 0) + 1;
+      answered++;
+      if (key && r.choice === key.correct) correct++;
+    }
+  }
+  return { total: responses.length, ratings, choices, correct, answered };
+}
+
+// Latest response per student (by name + period, case-insensitive).
+export function latestPerStudent(responses) {
+  const map = new Map();
+  for (const r of responses) {
+    const k = `${(r.name || "").trim().toLowerCase()}|${(r.period || "").toLowerCase()}`;
+    const prev = map.get(k);
+    if (!prev || (r.createdAt || 0) > (prev.createdAt || 0)) map.set(k, r);
+  }
+  return [...map.values()];
+}
+
+export function toCSV(rows) {
+  const cell = (v) => {
+    const s = String(v ?? "");
+    const safe = /^[=+\-@]/.test(s) ? `'${s}` : s;   // keep spreadsheets from running formulas
+    return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+  };
+  return rows.map((r) => r.map(cell).join(",")).join("\r\n");
+}
