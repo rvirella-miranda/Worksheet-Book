@@ -202,7 +202,8 @@ function graphSvg(group, openCount) {
     const circle = `<circle class="${cls}" cx="${p.x}" cy="${p.y}" r="7"/>`;
     if (!p.open) return `<g>${circle}${label}</g>`;
     const first = p.l.sheetList.find((s) => L.isReleased(state.book, s.id));
-    return `<a href="#${esc(first.id)}" aria-label="Lesson ${p.l.num}: ${esc(p.l.title)}">${circle}${label}</a>`;
+    const target = first ? first.id : L.ticketIdFor(p.l.id);
+    return `<a href="#${esc(target)}" aria-label="Lesson ${p.l.num}: ${esc(p.l.title)}">${circle}${label}</a>`;
   }).join("");
 
   return `<svg class="graph" viewBox="0 0 ${W} ${H}" role="img"

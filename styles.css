@@ -397,3 +397,15 @@ code { background: var(--seg); padding: 1px 6px; border-radius: 6px; font-size: 
 .barrow .why { grid-column: 1 / -1; font-size: 0.8rem; color: var(--ink-soft); margin: -2px 0 4px; }
 .res table td.long { min-width: 220px; white-space: pre-wrap; }
 .tick { color: var(--ok); font-weight: 700; } .cross { color: var(--danger); font-weight: 700; }
+
+/* ---------- Teacher: exit ticket editor ---------- */
+.editor textarea, .editor input[type="text"] {
+  width: 100%; border: 2px solid var(--grid-strong); border-radius: var(--radius-sm);
+  background: var(--paper); padding: 8px 10px; font-family: var(--font); font-size: 0.95rem; color: var(--ink);
+}
+.editor textarea { resize: vertical; }
+.ed-choice { display: grid; grid-template-columns: auto 1fr auto; gap: 6px 10px; align-items: center; margin-top: 8px; }
+.ed-choice .ed-note { grid-column: 2 / 3; font-size: 0.85rem; padding: 6px 10px; background: var(--surface); }
+.ed-correct { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 700; }
+.ed-correct input { accent-color: var(--eyebrow-sage); width: 18px; height: 18px; }
+.ed-img img { max-width: 180px; border: 2px solid var(--grid-strong); border-radius: 8px; background: #fff; }

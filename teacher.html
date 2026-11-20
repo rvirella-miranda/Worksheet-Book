@@ -54,6 +54,7 @@ let ticketPending = null;   // exit-ticket pack waiting for confirmation
 const openResults = new Set();
 const resCache = new Map(); // lessonId -> {ticket, key, responses}
 let resPeriod = "";
+let editing = null;        // { lessonId, draft, loading, error }
 
 document.getElementById("bookLine").textContent = `Book id: ${BOOK_ID}`;
 
@@ -133,8 +134,11 @@ function render() {
                 ${L.isReleased(book, L.ticketIdFor(l.id)) ? "checked" : ""}>Exit ticket</label>
               <a class="btn ghost small" href="${esc(studentLink(L.ticketIdFor(l.id)))}" target="_blank" rel="noopener">Preview</a>
               <button class="btn small" data-results="${esc(l.id)}" type="button" aria-expanded="${openResults.has(l.id)}">${openResults.has(l.id) ? "Hide results" : "Results"}</button>
-            </span>` : ""}
+              <button class="btn small" data-edit="${esc(l.id)}" type="button">${editing && editing.lessonId === l.id ? "Close editor" : "Edit"}</button>
+            </span>` : `
+            <span class="t-sheet"><button class="btn ghost small" data-edit="${esc(l.id)}" type="button">${editing && editing.lessonId === l.id ? "Close editor" : "+ Create exit ticket"}</button></span>`}
         </div>
+        ${editing && editing.lessonId === l.id ? `<div class="res editor" id="ed-${esc(l.id)}" style="grid-column:1/-1">${editorHTML(l)}</div>` : ""}
         ${openResults.has(l.id) ? `<div class="res" id="res-${esc(l.id)}" style="grid-column:1/-1">${resultsHTML(l)}</div>` : ""}
       </div>`).join("");
     return `<section class="card">
@@ -340,6 +344,134 @@ function downloadCSV(lesson) {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
+
+// ---------- Exit tickets: editor ----------
+const LETTERS = ["A", "B", "C", "D", "E", "F"];
+function blankDraft() {
+  return { summary: "", stem: "", explain: "Explain how you know.", image: "", removeImage: false,
+           choices: [{ text: "", note: "" }, { text: "", note: "" }, { text: "", note: "" }, { text: "", note: "" }],
+           correct: 0, why: "" };
+}
+function draftFrom(ticket, key) {
+  const q = (ticket && ticket.question) || {};
+  const letters = q.choices ? Object.keys(q.choices).sort() : [];
+  return {
+    summary: (ticket && ticket.summary) || "", stem: q.stem || "", explain: q.explain || "Explain how you know.",
+    image: q.image || "", removeImage: false,
+    choices: letters.map((k) => ({ text: q.choices[k], note: (key && key.wrong && key.wrong[k]) || "" })),
+    correct: Math.max(0, letters.indexOf(key && key.correct)), why: (key && key.why) || "",
+  };
+}
+
+async function openEditor(lessonId) {
+  if (editing && editing.lessonId === lessonId) { editing = null; render(); return; }
+  const lesson = book.lessons[lessonId];
+  editing = { lessonId, draft: null, loading: !!lesson.ticket };
+  render();
+  if (!lesson.ticket) { editing.draft = blankDraft(); render(); return; }
+  try {
+    const [t, k] = await Promise.all([
+      getDoc(doc(db, "books", BOOK_ID, "tickets", lessonId)),
+      getDoc(doc(db, "books", BOOK_ID, "ticketKeys", lessonId)),
+    ]);
+    if (!editing || editing.lessonId !== lessonId) return;
+    editing.draft = t.exists() ? draftFrom(t.data(), k.exists() ? k.data() : null) : blankDraft();
+  } catch (e) {
+    console.error(e); toast(`Couldn\u2019t open the editor (${e.code || e.message})`); editing = null;
+  }
+  if (editing) editing.loading = false;
+  render();
+}
+
+function editorHTML(lesson) {
+  if (!editing.draft) return `<p class="muted small">Loading\u2026</p>`;
+  const d = editing.draft;
+  const hasResponses = resCache.has(lesson.id) && resCache.get(lesson.id).responses.length;
+  return `
+    <div class="eyebrow plum">${lesson.ticket ? "Edit" : "Create"} exit ticket \u00b7 Lesson ${lesson.num}</div>
+    ${hasResponses ? `<p class="small status-bad" style="margin:0">Students have already turned this one in. Rewording is fine, but changing or reordering the answer choices will make their earlier answers harder to read in Results.</p>` : ""}
+    <label class="field"><span class="small muted">Part 1 \u00b7 Summary prompt</span>
+      <textarea data-ed="summary" rows="2" maxlength="400">${esc(d.summary)}</textarea></label>
+    <label class="field"><span class="small muted">Part 2 \u00b7 Question</span>
+      <textarea data-ed="stem" rows="3" maxlength="800">${esc(d.stem)}</textarea></label>
+    ${d.image ? `<div class="row ed-img"><img src="${esc(d.image)}" alt="Graph for this question">
+      <label class="switch"><input type="checkbox" data-ed="removeImage" ${d.removeImage ? "checked" : ""}>Remove this graph</label></div>` : ""}
+    <div class="field"><span class="small muted">Answer choices \u00b7 select the correct one. The note under each wrong answer is only for you.</span>
+      ${d.choices.map((c, i) => `
+        <div class="ed-choice">
+          <label class="ed-correct" title="Correct answer"><input type="radio" name="ed-correct" data-ed-correct="${i}" ${d.correct === i ? "checked" : ""}><span>${LETTERS[i]}</span></label>
+          <input type="text" data-ed-choice="${i}" value="${esc(c.text)}" maxlength="200" aria-label="Choice ${LETTERS[i]}" placeholder="Choice ${LETTERS[i]}">
+          <button class="btn ghost small" data-ed-remove="${i}" type="button" aria-label="Remove choice ${LETTERS[i]}">Remove</button>
+          ${d.correct === i ? "" : `<input type="text" class="ed-note" data-ed-note="${i}" value="${esc(c.note)}" maxlength="200" placeholder="What does choosing ${LETTERS[i]} usually mean?" aria-label="Note for choice ${LETTERS[i]}">`}
+        </div>`).join("")}
+      <div class="row">
+        ${d.choices.length < LETTERS.length ? `<button class="btn small" data-ed-add type="button">+ Add choice</button>` : ""}
+        ${d.choices.length ? "" : `<span class="small muted">No choices: students will just write an answer.</span>`}
+      </div>
+    </div>
+    ${d.choices.length ? `<label class="field"><span class="small muted">Why the correct answer is right (only you see this)</span>
+      <input type="text" data-ed="why" value="${esc(d.why)}" maxlength="300"></label>` : ""}
+    <label class="field"><span class="small muted">Prompt above the written answer</span>
+      <input type="text" data-ed="explain" value="${esc(d.explain)}" maxlength="160"></label>
+    <p class="et-error" id="edErr" role="alert" ${editing.error ? "" : "hidden"}>${esc(editing.error || "")}</p>
+    <div class="row">
+      <button class="btn primary" data-ed-save type="button">Save exit ticket</button>
+      <button class="btn ghost" data-edit="${esc(lesson.id)}" type="button">Cancel</button>
+      <span class="spacer"></span>
+      <a class="btn ghost small" href="${esc(studentLink(L.ticketIdFor(lesson.id)))}" target="_blank" rel="noopener">Preview saved version</a>
+    </div>`;
+}
+
+function wireEditor() {
+  if (!editing || !editing.draft) return;
+  const d = editing.draft;
+  const box = document.getElementById(`ed-${CSS.escape(editing.lessonId)}`);
+  if (!box) return;
+  box.querySelectorAll("[data-ed]").forEach((el) => el.addEventListener("input", () => {
+    d[el.dataset.ed] = el.type === "checkbox" ? el.checked : el.value;
+  }));
+  box.querySelectorAll("[data-ed=removeImage]").forEach((el) => el.addEventListener("change", () => { d.removeImage = el.checked; }));
+  box.querySelectorAll("[data-ed-choice]").forEach((el) => el.addEventListener("input", () => { d.choices[+el.dataset.edChoice].text = el.value; }));
+  box.querySelectorAll("[data-ed-note]").forEach((el) => el.addEventListener("input", () => { d.choices[+el.dataset.edNote].note = el.value; }));
+  box.querySelectorAll("[data-ed-correct]").forEach((el) => el.addEventListener("change", () => { d.correct = +el.dataset.edCorrect; render(); }));
+  box.querySelectorAll("[data-ed-remove]").forEach((el) => el.addEventListener("click", () => {
+    const i = +el.dataset.edRemove; d.choices.splice(i, 1);
+    if (d.correct === i) d.correct = 0; else if (d.correct > i) d.correct--;
+    render();
+  }));
+  box.querySelector("[data-ed-add]")?.addEventListener("click", () => { d.choices.push({ text: "", note: "" }); render(); });
+  box.querySelector("[data-ed-save]")?.addEventListener("click", saveEditor);
+}
+
+async function saveEditor() {
+  const lessonId = editing.lessonId, d = editing.draft;
+  const choices = {}, wrong = {};
+  d.choices.forEach((c, i) => { choices[LETTERS[i]] = c.text.trim(); if (i !== d.correct && c.note.trim()) wrong[LETTERS[i]] = c.note.trim(); });
+  const problems = [];
+  if (!d.summary.trim()) problems.push("a summary prompt");
+  if (!d.stem.trim()) problems.push("a question");
+  if (d.choices.length === 1) problems.push("at least 2 answer choices (or remove them all for a written answer)");
+  if (d.choices.some((c) => !c.text.trim())) problems.push("text for every answer choice");
+  if (problems.length) { editing.error = `Still needs ${problems.join(", ")}.`; render(); return; }
+  const pack = { tickets: { [lessonId]: {
+    summary: d.summary, question: { stem: d.stem, explain: d.explain || "Explain your thinking.",
+      ...(d.image && !d.removeImage ? { image: d.image } : {}), ...(d.choices.length ? { choices } : {}) },
+    key: d.choices.length ? { correct: LETTERS[d.correct], why: d.why.trim(), wrong } : {} } } };
+  const { ok, errors } = L.validateTicketPack(pack);
+  if (!ok.length) { editing.error = errors[0] || "Something in this ticket isn\u2019t valid."; render(); return; }
+  const wasNew = !book.lessons[lessonId].ticket;
+  try {
+    await setDoc(doc(db, "books", BOOK_ID, "tickets", lessonId), ok[0].ticket);
+    await setDoc(doc(db, "books", BOOK_ID, "ticketKeys", lessonId), ok[0].key);
+    if (wasNew) await updateDoc(bookRef, new FieldPath("lessons", lessonId, "ticket"), true);
+    resCache.delete(lessonId);
+    editing = null; render();
+    toast(wasNew ? "Exit ticket created. It\u2019s closed until you switch it on." : "Exit ticket saved");
+  } catch (e) {
+    console.error(e); editing.error = `Didn\u2019t save (${e.code || e.message})`; render();
+  }
+}
+
 // ---------- Events ----------
 function wire() {
   const bt = document.getElementById("bookTitle");
@@ -371,6 +503,8 @@ function wire() {
   }));
 
   main.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => deleteLesson(b.dataset.del)));
+  main.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => openEditor(b.dataset.edit)));
+  wireEditor();
 
   const per = document.getElementById("periods");
   per.addEventListener("change", () => saveFields([[new FieldPath("periods"),
