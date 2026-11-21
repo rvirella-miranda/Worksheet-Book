@@ -51,6 +51,7 @@ let unsub = null;
 let pending = null;      // upload plan waiting for confirmation
 let uploading = false;
 let ticketPending = null;   // exit-ticket pack waiting for confirmation
+let linkPending = null;     // video-link pack waiting for confirmation
 const openResults = new Set();
 const resCache = new Map(); // lessonId -> {ticket, key, responses}
 let resPeriod = "";
@@ -182,6 +183,7 @@ function render() {
     ${uploadSection()}
     <h2 style="margin-top:28px">Add exit tickets</h2>
     ${ticketSection()}
+    ${linkPackSection()}
   `;
   wire();
 }
@@ -258,6 +260,7 @@ async function chooseTicketFile(file) {
     toast(`That pack is for the ${name} book. Open the ${name} teacher panel to add it.`);
     return;
   }
+  if (pack && pack.links && !pack.tickets) { toast("That\u2019s a video-link pack. Use \u201cChoose video-link pack\u201d for it."); return; }
   ticketPending = { plan: L.validateTicketPack(pack) };
   render();
   document.getElementById("doTickets")?.scrollIntoView({ block: "center" });
@@ -287,6 +290,65 @@ async function runTicketUpload() {
   }
   toast(failed ? `${done} added, ${failed} failed` : `${done} exit tickets added. They\u2019re closed until you switch them on.`);
   if (!failed) { ticketPending = null; render(); }
+}
+
+
+// ---------- Refresher videos: upload a whole unit ----------
+function linkPackSection() {
+  const plan = linkPending ? linkPending.plan : null;
+  const lessons = (book && book.lessons) || {};
+  return `<section class="card">
+    <p style="margin-top:0">Upload a video-link pack (a <code>.json</code> file) to add refresher videos for a whole unit at once. Each lesson\u2019s links <strong>replace</strong> the videos that lesson has now; lessons not in the file aren\u2019t changed. You can still fine-tune any lesson with its <strong>Videos</strong> button.</p>
+    <label class="drop" id="ldrop">
+      <input type="file" id="lfile" accept="application/json,.json" hidden>
+      <strong>Choose video-link pack</strong> <span class="muted">or drop it here</span>
+    </label>
+    ${plan ? `
+      <div class="table-scroll" style="margin-top:16px"><table>
+        <thead><tr><th>Lesson</th><th>Videos</th><th>Status</th></tr></thead>
+        <tbody>
+          ${plan.ok.map((p) => { const l = lessons[p.lessonId]; const had = l ? L.safeLinks(l).length : 0; return `<tr data-lrow="${esc(p.lessonId)}">
+            <td>${esc(p.lessonId.toUpperCase())}${l ? `<br><span class="muted small">${esc(l.title)}</span>` : ""}</td>
+            <td>${p.links.length ? p.links.map((k) => `<a href="${esc(k.url)}" target="_blank" rel="noopener noreferrer">${esc(k.title)}</a>`).join("<br>") : `<span class="muted">(clears this lesson\u2019s videos)</span>`}</td>
+            <td class="st ${l ? "" : "status-bad"}">${l ? (had ? `Replaces ${had}` : "New") : "No matching lesson yet"}</td></tr>`; }).join("")}
+          ${plan.errors.map((e) => `<tr><td colspan="3" class="status-bad">${esc(e)}</td></tr>`).join("")}
+        </tbody></table></div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn primary" id="doLinks" type="button" ${plan.ok.some((p) => lessons[p.lessonId]) ? "" : "disabled"}>Add videos</button>
+        <button class="btn ghost" id="cancelLinks" type="button">Cancel</button>
+      </div>` : ""}
+  </section>`;
+}
+async function chooseLinkFile(file) {
+  if (!file) return;
+  let pack = null;
+  try { pack = JSON.parse(await file.text()); } catch { toast("That file isn\u2019t a readable video-link pack."); return; }
+  if (pack && pack.book && pack.book !== BOOK_ID) {
+    const name = pack.book === "prealgebra" ? "Pre-Algebra" : pack.book === "algebra1" ? "Algebra 1" : pack.book;
+    toast(`That pack is for the ${name} book. Open the ${name} teacher panel to add it.`);
+    return;
+  }
+  if (pack && pack.tickets && !pack.links) { toast("That\u2019s an exit-ticket pack. Use \u201cChoose exit-ticket pack\u201d for it."); return; }
+  linkPending = { plan: L.validateLinkPack(pack) };
+  render();
+  document.getElementById("doLinks")?.scrollIntoView({ block: "center" });
+}
+async function runLinkUpload() {
+  if (!linkPending) return;
+  const lessons = (book && book.lessons) || {};
+  const items = linkPending.plan.ok.filter((p) => lessons[p.lessonId]);
+  document.getElementById("doLinks").disabled = true;
+  const args = [];
+  for (const p of items) args.push(new FieldPath("lessons", p.lessonId, "links"), p.links);
+  try {
+    await updateDoc(bookRef, ...args);                 // one save for the whole unit
+    linkPending = null; render();
+    const n = items.reduce((t, p) => t + p.links.length, 0);
+    toast(`${n} video link${n === 1 ? "" : "s"} added to ${items.length} lesson${items.length === 1 ? "" : "s"}`);
+  } catch (e) {
+    console.error(e); toast(`Didn\u2019t save (${e.code || e.message})`);
+    const b = document.getElementById("doLinks"); if (b) b.disabled = false;
+  }
 }
 
 // ---------- Exit tickets: results ----------
@@ -737,6 +799,16 @@ function wire() {
   tdrop.addEventListener("drop", (e) => chooseTicketFile([...e.dataTransfer.files].find((f) => /\.json$/i.test(f.name))));
   document.getElementById("cancelTickets")?.addEventListener("click", () => { ticketPending = null; render(); });
   document.getElementById("doTickets")?.addEventListener("click", runTicketUpload);
+
+  const ldrop = document.getElementById("ldrop"), lfile = document.getElementById("lfile");
+  if (ldrop && lfile) {
+    lfile.addEventListener("change", () => chooseLinkFile(lfile.files[0]));
+    ["dragenter", "dragover"].forEach((ev) => ldrop.addEventListener(ev, (e) => { e.preventDefault(); ldrop.classList.add("over"); }));
+    ["dragleave", "drop"].forEach((ev) => ldrop.addEventListener(ev, (e) => { e.preventDefault(); ldrop.classList.remove("over"); }));
+    ldrop.addEventListener("drop", (e) => chooseLinkFile([...e.dataTransfer.files].find((f) => /\.json$/i.test(f.name))));
+  }
+  document.getElementById("cancelLinks")?.addEventListener("click", () => { linkPending = null; render(); });
+  document.getElementById("doLinks")?.addEventListener("click", runLinkUpload);
 
   const drop = document.getElementById("drop");
   const input = document.getElementById("files");

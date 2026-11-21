@@ -330,3 +330,29 @@ export function safeLinks(lesson) {
   return ((lesson && lesson.links) || []).slice(0, LINK_LIMITS.perLesson)
     .map((l) => cleanLink(l && l.url, l && l.title).link).filter(Boolean);
 }
+
+// Video-link pack: { book, unit, links: { "u4-01": [{ title, url }, ...], ... } }
+// Returns { ok: [{ lessonId, links }], errors: [...] }. Each lesson's list replaces its current links.
+export function validateLinkPack(pack) {
+  const ok = [], errors = [];
+  if (!pack || typeof pack !== "object" || !pack.links || typeof pack.links !== "object" || Array.isArray(pack.links)) {
+    return { ok, errors: ["This file doesn\u2019t look like a video-link pack (it needs a \u201clinks\u201d section)."] };
+  }
+  for (const [lessonId, list] of Object.entries(pack.links)) {
+    if (!/^u\d{1,2}-\d{2}$/.test(lessonId)) { errors.push(`${lessonId}: lesson ids look like u4-01.`); continue; }
+    if (!Array.isArray(list)) { errors.push(`${lessonId}: links must be a list.`); continue; }
+    if (list.length > LINK_LIMITS.perLesson) { errors.push(`${lessonId}: at most ${LINK_LIMITS.perLesson} links per lesson.`); continue; }
+    const clean = [];
+    let bad = null;
+    list.forEach((item, i) => {
+      if (bad) return;
+      const c = cleanLink(item && item.url, item && item.title);
+      if (c.error) bad = `${lessonId}, link ${i + 1}: ${c.error}`;
+      else clean.push({ url: c.link.url, title: c.link.title });
+    });
+    if (bad) { errors.push(bad); continue; }
+    ok.push({ lessonId, links: clean });
+  }
+  ok.sort((a, b) => a.lessonId.localeCompare(b.lessonId, undefined, { numeric: true }));
+  return { ok, errors };
+}
