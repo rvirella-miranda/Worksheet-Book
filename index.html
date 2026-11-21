@@ -116,6 +116,18 @@ function route() {
   else renderContents();
 }
 
+
+// Refresher links open in a new tab so the workbook stays open.
+function refresherHTML(lesson, where) {
+  const links = L.safeLinks(lesson);
+  if (!links.length) return "";
+  return `<div class="refresh ${where}">
+    <span class="refresh-label">Need a refresher?</span>
+    <span class="refresh-links">${links.map((k) => `<a class="refresh-link" href="${esc(k.url)}" target="_blank" rel="noopener noreferrer"
+      title="Opens ${esc(k.site)} in a new tab"><span class="play" aria-hidden="true">\u25B6</span>${esc(k.title)}<span class="sr-only"> (opens in a new tab)</span></a>`).join("")}</span>
+  </div>`;
+}
+
 // ---------- Contents page ----------
 function renderContents() {
   document.title = state.book.title || DEFAULT_BOOK_TITLE;
@@ -154,6 +166,7 @@ function renderContents() {
     return `<li class="lesson ${open ? `is-open taped s${(i % 5) + 1}` : ""}" id="row-${esc(l.id)}">
       <div class="eyebrow">Lesson ${l.num}</div>
       <div class="title">${esc(l.title)}</div>
+      ${open ? refresherHTML(l, "on-card") : ""}
       <div class="foot">
         ${open ? `<span class="actions">${buttons}</span>` : `<span class="soon">Not assigned yet</span>`}
       </div>
@@ -433,6 +446,7 @@ async function renderViewer(sid, { lesson, sheet }) {
       <a class="btn" id="tabBtn" href="${esc(location.href)}" target="_blank" rel="noopener">Open in new tab</a>
     </div></div>
     <div id="flag"></div>
+    ${refresherHTML(lesson, "on-sheet no-print")}
     <div class="sheet-pages" id="pages">
       ${Array.from({ length: sheet.pages || 2 }, () => `<div class="skeleton"></div>`).join("")}
     </div>`;

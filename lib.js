@@ -294,3 +294,39 @@ export function participation(students, responses, period) {
     missing: roster.filter((s) => !done.has(s.id)),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Refresher links (Khan Academy, YouTube, etc.) shown before each worksheet
+// ---------------------------------------------------------------------------
+export const LINK_LIMITS = { perLesson: 5, title: 80, url: 500 };
+
+export function siteName(host) {
+  const h = host.replace(/^www\./, "").replace(/^m\./, "");
+  if (/(^|\.)khanacademy\.org$/.test(h)) return "Khan Academy";
+  if (/(^|\.)youtube\.com$/.test(h) || h === "youtu.be" || /(^|\.)youtube-nocookie\.com$/.test(h)) return "YouTube";
+  if (/(^|\.)google\.com$/.test(h)) return "Google";
+  return h;
+}
+
+// Returns { link: {url, title, site} } or { error }.
+export function cleanLink(rawUrl, rawTitle = "") {
+  let s = String(rawUrl || "").trim();
+  if (!s) return { error: "Paste a link." };
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(s)) s = "https://" + s;          // “youtube.com/watch…” is fine
+  let u;
+  try { u = new URL(s); } catch { return { error: "That doesn’t look like a web link." }; }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return { error: "Only web links (http or https) can be added." };
+  if (!u.hostname.includes(".")) return { error: "That doesn’t look like a web link." };
+  const url = u.toString();
+  if (url.length > LINK_LIMITS.url) return { error: "That link is too long." };
+  const site = siteName(u.hostname);
+  const kind = site === "YouTube" ? "YouTube video" : site;
+  const title = String(rawTitle || "").replace(/\s+/g, " ").trim().slice(0, LINK_LIMITS.title) || kind;
+  return { link: { url, title, site } };
+}
+
+// Links stored on a lesson, re-checked before showing them to students.
+export function safeLinks(lesson) {
+  return ((lesson && lesson.links) || []).slice(0, LINK_LIMITS.perLesson)
+    .map((l) => cleanLink(l && l.url, l && l.title).link).filter(Boolean);
+}

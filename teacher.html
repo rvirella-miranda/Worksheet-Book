@@ -55,6 +55,7 @@ const openResults = new Set();
 const resCache = new Map(); // lessonId -> {ticket, key, responses}
 let resPeriod = "";
 let editing = null;
+let linkEdit = null;        // { lessonId, rows: [{url, title}], error }
 let roster = {};            // studentId -> {name, period}
 let rosterUnsub = null;
 let rosterMsg = "";        // { lessonId, draft, loading, error }
@@ -127,6 +128,7 @@ function render() {
       <div class="t-lesson">
         <span class="num" aria-hidden="true" style="font-weight:600;color:var(--ink-soft)">${l.num}</span>
         <div class="row"><strong style="font-weight:500">${esc(l.title)}</strong><span class="spacer"></span>
+          <button class="btn small" data-links="${esc(l.id)}" type="button">${linkEdit && linkEdit.lessonId === l.id ? "Close videos" : `Videos${L.safeLinks(l).length ? ` (${L.safeLinks(l).length})` : ""}`}</button>
           <button class="btn ghost small" data-del="${esc(l.id)}" type="button">Delete lesson</button></div>
         <div class="sheets">
           ${l.sheetList.map((s) => `
@@ -147,6 +149,7 @@ function render() {
             <span class="t-sheet"><button class="btn ghost small" data-edit="${esc(l.id)}" type="button">${editing && editing.lessonId === l.id ? "Close editor" : "+ Create exit ticket"}</button></span>`}
         </div>
         ${editing && editing.lessonId === l.id ? `<div class="res editor" id="ed-${esc(l.id)}" style="grid-column:1/-1">${editorHTML(l)}</div>` : ""}
+        ${linkEdit && linkEdit.lessonId === l.id ? `<div class="res editor" id="lk-${esc(l.id)}" style="grid-column:1/-1">${linksHTML(l)}</div>` : ""}
         ${openResults.has(l.id) ? `<div class="res" id="res-${esc(l.id)}" style="grid-column:1/-1">${resultsHTML(l)}</div>` : ""}
       </div>`).join("");
     return `<section class="card">
@@ -602,6 +605,70 @@ async function clearResponse(lessonId, responseId, name) {
   } catch (e) { toast(`Couldn\u2019t clear (${e.code || e.message})`); }
 }
 
+
+// ---------- Refresher videos ----------
+function openLinks(lessonId) {
+  if (linkEdit && linkEdit.lessonId === lessonId) { linkEdit = null; render(); return; }
+  const cur = L.safeLinks(book.lessons[lessonId]).map((k) => ({ url: k.url, title: k.title }));
+  linkEdit = { lessonId, rows: cur.length ? cur : [{ url: "", title: "" }], error: "" };
+  render();
+  document.querySelector(`#lk-${CSS.escape(lessonId)} input[data-lk-url]`)?.focus();
+}
+function linksHTML(lesson) {
+  const e = linkEdit;
+  return `
+    <div class="eyebrow plum">Refresher videos \u00b7 Lesson ${lesson.num}</div>
+    <p class="small muted" style="margin:0">Students see these above the worksheet buttons once the lesson is open. Each one opens in a new tab. Leave the title blank to use the site\u2019s name.</p>
+    ${e.rows.map((r, i) => `
+      <div class="lk-row">
+        <input type="text" data-lk-url="${i}" value="${esc(r.url)}" placeholder="Paste a Khan Academy or YouTube link" aria-label="Link ${i + 1}">
+        <input type="text" data-lk-title="${i}" value="${esc(r.title)}" maxlength="${L.LINK_LIMITS.title}" placeholder="Title (optional), e.g. Slope in 5 minutes" aria-label="Title for link ${i + 1}">
+        <a class="btn ghost small" data-lk-test="${i}" href="${esc((L.cleanLink(r.url).link || {}).url || "#")}" target="_blank" rel="noopener noreferrer" ${L.cleanLink(r.url).link ? "" : "hidden"}>Test</a>
+        <button class="btn ghost small" data-lk-remove="${i}" type="button" aria-label="Remove link ${i + 1}">Remove</button>
+      </div>`).join("")}
+    <div class="row">
+      ${e.rows.length < L.LINK_LIMITS.perLesson ? `<button class="btn small" data-lk-add type="button">+ Add another link</button>` : `<span class="small muted">Up to ${L.LINK_LIMITS.perLesson} links per lesson.</span>`}
+    </div>
+    <p class="et-error" id="lkErr" ${e.error ? "" : "hidden"}>${esc(e.error)}</p>
+    <div class="row">
+      <button class="btn primary" data-lk-save type="button">Save videos</button>
+      <button class="btn ghost" data-links="${esc(lesson.id)}" type="button">Cancel</button>
+    </div>`;
+}
+function wireLinks() {
+  if (!linkEdit) return;
+  const box = document.getElementById(`lk-${CSS.escape(linkEdit.lessonId)}`); if (!box) return;
+  box.querySelectorAll("[data-lk-url]").forEach((el) => el.addEventListener("input", () => {
+    linkEdit.rows[+el.dataset.lkUrl].url = el.value;
+    const t = box.querySelector(`[data-lk-test="${el.dataset.lkUrl}"]`), c = L.cleanLink(el.value).link;
+    if (t) { t.hidden = !c; t.href = c ? c.url : "#"; }
+  }));
+  box.querySelectorAll("[data-lk-title]").forEach((el) => el.addEventListener("input", () => { linkEdit.rows[+el.dataset.lkTitle].title = el.value; }));
+  const hideErr = () => { linkEdit.error = ""; const e = document.getElementById("lkErr"); if (e) e.hidden = true; };
+  box.querySelectorAll("input").forEach((el) => el.addEventListener("input", hideErr));
+  box.querySelectorAll("[data-lk-remove]").forEach((b) => b.addEventListener("click", () => {
+    linkEdit.error = "";
+    linkEdit.rows.splice(+b.dataset.lkRemove, 1); if (!linkEdit.rows.length) linkEdit.rows.push({ url: "", title: "" }); render();
+  }));
+  box.querySelector("[data-lk-add]")?.addEventListener("click", () => { linkEdit.rows.push({ url: "", title: "" }); render(); });
+  box.querySelector("[data-lk-save]")?.addEventListener("click", saveLinks);
+}
+async function saveLinks() {
+  const out = [];
+  for (const [i, r] of linkEdit.rows.entries()) {
+    if (!r.url.trim() && !r.title.trim()) continue;            // blank row
+    const c = L.cleanLink(r.url, r.title);
+    if (c.error) { linkEdit.error = `Link ${i + 1}: ${c.error}`; render(); return; }
+    out.push({ url: c.link.url, title: c.link.title });
+  }
+  const lessonId = linkEdit.lessonId;
+  try {
+    await updateDoc(bookRef, new FieldPath("lessons", lessonId, "links"), out.slice(0, L.LINK_LIMITS.perLesson));
+    linkEdit = null; render();
+    toast(out.length ? `${out.length} video link${out.length === 1 ? "" : "s"} saved` : "Video links removed");
+  } catch (e) { linkEdit.error = `Didn\u2019t save (${e.code || e.message})`; render(); }
+}
+
 // ---------- Events ----------
 function wire() {
   const bt = document.getElementById("bookTitle");
@@ -634,6 +701,8 @@ function wire() {
 
   main.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => deleteLesson(b.dataset.del)));
   main.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => openEditor(b.dataset.edit)));
+  main.querySelectorAll("[data-links]").forEach((b) => b.addEventListener("click", () => openLinks(b.dataset.links)));
+  wireLinks();
   wireEditor();
 
   const per = document.getElementById("periods");
