@@ -128,7 +128,11 @@ function render() {
     const lessons = g.lessons.map((l) => `
       <div class="t-lesson">
         <span class="num" aria-hidden="true" style="font-weight:600;color:var(--ink-soft)">${l.num}</span>
-        <div class="row"><strong style="font-weight:500">${esc(l.title)}</strong><span class="spacer"></span>
+        <div class="row"><strong style="font-weight:500">${esc(l.title)}</strong>
+          <label class="assigned-edit small muted">Assigned
+            <input type="date" data-assigned="${esc(l.id)}" value="${L.validDate(l.assigned) ? l.assigned : ""}" aria-label="Assigned date for lesson ${l.num}">
+            ${L.validDate(l.assigned) ? "" : `<span class="hint">set automatically when you open a worksheet</span>`}
+          </label><span class="spacer"></span>
           <button class="btn small" data-links="${esc(l.id)}" type="button">${linkEdit && linkEdit.lessonId === l.id ? "Close videos" : `Videos${L.safeLinks(l).length ? ` (${L.safeLinks(l).length})` : ""}`}</button>
           <button class="btn ghost small" data-del="${esc(l.id)}" type="button">Delete lesson</button></div>
         <div class="sheets">
@@ -741,8 +745,10 @@ function wire() {
 
   main.querySelectorAll("input[data-sheet]").forEach((cb) => cb.addEventListener("change", async () => {
     cb.disabled = true;
-    const ok = await saveFields([[new FieldPath("released", cb.dataset.sheet), cb.checked]],
-      cb.checked ? "Opened for students" : "Closed for students");
+    const pairs = [[new FieldPath("released", cb.dataset.sheet), cb.checked]];
+    const lid = cb.checked ? L.lessonForSheet(book, cb.dataset.sheet) : null;      // worksheets only, not exit tickets
+    if (lid && !L.validDate(book.lessons[lid].assigned)) pairs.push([new FieldPath("lessons", lid, "assigned"), L.todayISO()]);
+    const ok = await saveFields(pairs, cb.checked ? "Opened for students" : "Closed for students");
     if (!ok) cb.checked = !cb.checked;
     cb.disabled = false;
   }));
@@ -753,6 +759,7 @@ function wire() {
     if (!g) return;
     if (!confirm(`${on ? "Open" : "Close"} every worksheet in ${g.unitTitle}?`)) return;
     const pairs = g.lessons.flatMap((l) => l.sheetList.map((s) => [new FieldPath("released", s.id), on]));
+    if (on) for (const l of g.lessons) if (!L.validDate(l.assigned)) pairs.push([new FieldPath("lessons", l.id, "assigned"), L.todayISO()]);
     await saveFields(pairs, on ? "Unit opened" : "Unit closed");
   }));
 
@@ -761,6 +768,12 @@ function wire() {
     catch { prompt("Copy this link:", studentLink(b.dataset.copy)); }
   }));
 
+  main.querySelectorAll("input[data-assigned]").forEach((inp) => inp.addEventListener("change", () => {
+    const v = inp.value;
+    if (v && !L.validDate(v)) { toast("Please pick a valid date"); return; }
+    saveFields([[new FieldPath("lessons", inp.dataset.assigned, "assigned"), v ? v : deleteField()]],
+      v ? `Assigned date set to ${L.formatAssigned(v)}` : "Assigned date cleared");
+  }));
   main.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => deleteLesson(b.dataset.del)));
   main.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => openEditor(b.dataset.edit)));
   main.querySelectorAll("[data-links]").forEach((b) => b.addEventListener("click", () => openLinks(b.dataset.links)));

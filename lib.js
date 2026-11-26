@@ -356,3 +356,29 @@ export function validateLinkPack(pack) {
   ok.sort((a, b) => a.lessonId.localeCompare(b.lessonId, undefined, { numeric: true }));
   return { ok, errors };
 }
+
+// ---------------------------------------------------------------------------
+// Assigned dates (stored on each lesson as "YYYY-MM-DD", a calendar date with no time zone)
+// ---------------------------------------------------------------------------
+export function todayISO(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;      // the teacher's local date
+}
+export function validDate(s) {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split("-").map(Number); const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
+// "Mon, Nov 24"; adds the year only if it is not the current year.
+export function formatAssigned(s, now = new Date()) {
+  if (!validDate(s)) return "";
+  const [y, m, d] = s.split("-").map(Number); const t = new Date(Date.UTC(y, m - 1, d));
+  const opts = { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" };
+  if (y !== now.getFullYear()) opts.year = "numeric";
+  return t.toLocaleDateString("en-US", opts);
+}
+// Which lesson a worksheet switch belongs to (exit-ticket switches don't count).
+export function lessonForSheet(book, sheetId) {
+  for (const [id, l] of Object.entries((book && book.lessons) || {})) if (l && l.sheets && l.sheets[sheetId]) return id;
+  return null;
+}

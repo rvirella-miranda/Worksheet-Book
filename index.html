@@ -166,6 +166,7 @@ function renderContents() {
     return `<li class="lesson ${open ? `is-open taped s${(i % 5) + 1}` : ""}" id="row-${esc(l.id)}">
       <div class="eyebrow">Lesson ${l.num}</div>
       <div class="title">${esc(l.title)}</div>
+      ${open && L.validDate(l.assigned) ? `<div class="assigned">Assigned ${esc(L.formatAssigned(l.assigned))}</div>` : ""}
       ${open ? refresherHTML(l, "on-card") : ""}
       <div class="foot">
         ${open ? `<span class="actions">${buttons}</span>` : `<span class="soon">Not assigned yet</span>`}
@@ -439,7 +440,7 @@ async function renderViewer(sid, { lesson, sheet }) {
       <a class="btn ghost" href="#">← All lessons</a>
       <div class="where">
         <div class="t">Lesson ${lesson.num}: ${esc(lesson.title)}</div>
-        <div class="muted small">${esc(sheet.label)}</div>
+        <div class="muted small">${esc(sheet.label)}${L.validDate(lesson.assigned) ? ` · Assigned ${esc(L.formatAssigned(lesson.assigned))}` : ""}</div>
       </div>
       ${switcher}
       <button class="btn" id="printBtn" type="button">Print</button>

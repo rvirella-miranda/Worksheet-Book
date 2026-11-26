@@ -446,3 +446,9 @@ code { background: var(--seg); padding: 1px 6px; border-radius: 6px; font-size: 
 @media (max-width: 920px) { .refresh.on-sheet { margin: 18px 16px 0; } }
 .lk-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto auto; gap: 8px; align-items: center; }
 @media (max-width: 700px) { .lk-row { grid-template-columns: 1fr auto; } .lk-row input[data-lk-title] { grid-column: 1 / -1; } }
+
+/* ---------- Assigned dates ---------- */
+.lesson .assigned { margin: -2px 0 8px; font-family: var(--font); font-size: 0.8rem; font-weight: 600; letter-spacing: 0.02em; color: var(--ink-soft); }
+.assigned-edit { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 0 12px; }
+.assigned-edit input[type="date"] { border: 2px solid var(--grid-strong); border-radius: var(--radius-sm); background: var(--paper); padding: 3px 8px; font-family: var(--font); font-size: 0.85rem; color: var(--ink); }
+.assigned-edit .hint { font-size: 0.75rem; color: var(--ink-faint); }
